@@ -1,17 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * Service tests — focused on binary resolution and lifecycle logic.
+ * Service tests — focused on lifecycle logic (start/stop).
  *
- * These tests mock child_process and @bitrouter/cli to avoid spawning
- * real processes. Integration testing with a real BitRouter binary
- * is left to CI.
+ * These tests mock child_process and binary resolution to avoid spawning
+ * real processes or downloading binaries.
  */
 
 // Mock child_process before importing service.ts.
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(),
   execSync: vi.fn(),
+}));
+
+// Mock binary resolution.
+vi.mock("../src/binary.js", () => ({
+  resolveBinaryPath: vi.fn(() => Promise.resolve("/usr/local/bin/bitrouter")),
 }));
 
 // Mock the config and health modules to isolate service logic.
@@ -30,9 +34,9 @@ vi.mock("../src/routing.js", () => ({
   refreshRoutes: vi.fn(() => Promise.resolve()),
 }));
 
-import { spawn, execSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { resolveBinaryPath } from "../src/binary.js";
 import { registerBitrouterService } from "../src/service.js";
-import { waitForReady } from "../src/health.js";
 import type {
   BitrouterState,
   OpenClawPluginApi,
@@ -82,6 +86,7 @@ function createMockChild() {
 describe("registerBitrouterService", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.mocked(resolveBinaryPath).mockResolvedValue("/usr/local/bin/bitrouter");
   });
 
   it("registers a service with id 'bitrouter'", () => {
@@ -102,9 +107,6 @@ describe("registerBitrouterService", () => {
     const mockChild = createMockChild();
     vi.mocked(spawn).mockReturnValue(mockChild as any);
 
-    // @bitrouter/cli isn't installed — fall back to PATH.
-    vi.mocked(execSync).mockReturnValue("/usr/local/bin/bitrouter\n");
-
     const api = createMockApi();
     const state = createMockState();
     registerBitrouterService(api, {}, state);
@@ -113,8 +115,9 @@ describe("registerBitrouterService", () => {
     const serviceOpts = vi.mocked(api.registerService).mock.calls[0][0];
     await serviceOpts.start();
 
+    expect(resolveBinaryPath).toHaveBeenCalledWith("/tmp");
     expect(spawn).toHaveBeenCalledWith(
-      expect.any(String),
+      "/usr/local/bin/bitrouter",
       ["--home-dir", expect.any(String), "serve"],
       expect.objectContaining({
         stdio: ["ignore", "pipe", "pipe"],
@@ -149,19 +152,16 @@ describe("registerBitrouterService", () => {
     expect(state.healthy).toBe(false);
   });
 
-  it("falls back to PATH lookup when @bitrouter/cli is not available", async () => {
-    const mockChild = createMockChild();
-    vi.mocked(spawn).mockReturnValue(mockChild as any);
-    vi.mocked(execSync).mockReturnValue("/usr/bin/bitrouter\n");
+  it("throws when binary resolution fails", async () => {
+    vi.mocked(resolveBinaryPath).mockRejectedValue(
+      new Error("BitRouter binary not found.")
+    );
 
     const api = createMockApi();
     const state = createMockState();
     registerBitrouterService(api, {}, state);
 
     const serviceOpts = vi.mocked(api.registerService).mock.calls[0][0];
-    await serviceOpts.start();
-
-    // Should have fallen back to `which bitrouter`.
-    expect(state.process).toBe(mockChild);
+    await expect(serviceOpts.start()).rejects.toThrow("BitRouter binary not found.");
   });
 });

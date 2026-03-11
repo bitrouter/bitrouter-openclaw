@@ -6,7 +6,7 @@
  *
  * The service:
  * 1. Generates bitrouter.yaml from plugin config (via config.ts)
- * 2. Resolves the bitrouter binary (via @bitrouter/cli npm package or PATH)
+ * 2. Resolves the bitrouter binary (auto-downloads from GitHub releases if needed)
  * 3. Spawns `bitrouter --home-dir <dir> serve` as a child process
  * 4. Waits for the health endpoint to respond
  * 5. Starts the periodic health check loop
@@ -14,7 +14,7 @@
  * On stop, sends SIGTERM → waits up to 10s → SIGKILL as fallback.
  */
 
-import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 
 import type {
   BitrouterPluginConfig,
@@ -25,51 +25,7 @@ import { DEFAULTS } from "./types.js";
 import { writeConfigToDir, resolveHomeDir } from "./config.js";
 import { startHealthCheck, stopHealthCheck, waitForReady } from "./health.js";
 import { refreshRoutes } from "./routing.js";
-
-// ── Binary resolution ────────────────────────────────────────────────
-
-/**
- * Find the bitrouter binary.
- *
- * Resolution order:
- * 1. @bitrouter/cli npm package (installed via cargo-dist, provides
- *    platform-specific binaries like esbuild's approach)
- * 2. `bitrouter` on $PATH (for users who installed via cargo install)
- *
- * Throws a descriptive error if neither is available.
- */
-function resolveBinaryPath(): string {
-  // Try 1: npm package (@bitrouter/cli published by cargo-dist).
-  try {
-    // The package exports the path to the platform-specific binary.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const cli = require("@bitrouter/cli") as { getBinaryPath: () => string };
-    return cli.getBinaryPath();
-  } catch {
-    // Package not installed or doesn't export getBinaryPath — fall through.
-  }
-
-  // Try 2: binary on PATH.
-  try {
-    const result = execSync("which bitrouter", {
-      encoding: "utf-8",
-      timeout: 5_000,
-    }).trim();
-    if (result) return result;
-  } catch {
-    // Not on PATH — fall through.
-  }
-
-  throw new Error(
-    "BitRouter binary not found.\n" +
-      "Install it with one of:\n" +
-      '  npm install @bitrouter/cli          # recommended (via cargo-dist)\n' +
-      "  cargo install bitrouter             # from source\n" +
-      "  cargo binstall bitrouter            # pre-built binary\n" +
-      "\n" +
-      "Or ensure `bitrouter` is on your $PATH."
-  );
-}
+import { resolveBinaryPath } from "./binary.js";
 
 // ── Service registration ─────────────────────────────────────────────
 
@@ -90,10 +46,11 @@ export function registerBitrouterService(
       writeConfigToDir(config, state.homeDir);
       api.log.info(`Config written to ${state.homeDir}`);
 
-      // 2. Find the binary.
+      // 2. Find the binary (downloads from GitHub releases if not cached).
       let binaryPath: string;
       try {
-        binaryPath = resolveBinaryPath();
+        const dataDir = api.getDataDir();
+        binaryPath = await resolveBinaryPath(dataDir);
       } catch (err) {
         api.log.error(`${err}`);
         throw err;
