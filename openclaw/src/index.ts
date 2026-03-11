@@ -9,9 +9,21 @@
  *   - routing.ts  → before_model_resolve hook for selective interception
  *   - config.ts   → generate bitrouter.yaml from plugin config
  *   - health.ts   → periodic health checks and readiness polling
+ *   - setup.ts    → first-run wizard (BYOK / Cloud)
+ *
+ * First-run behaviour:
+ *   If config.mode is unset (plugin never configured), the plugin:
+ *     1. Registers the "bitrouter" provider with both auth methods
+ *        (so `openclaw models auth login --provider bitrouter` works)
+ *     2. Registers a `openclaw bitrouter setup` CLI alias
+ *     3. Logs a clear hint and returns early — daemon is NOT started,
+ *        tools are NOT registered, model interception is OFF.
+ *
+ *   After the wizard runs (writes configPatch → openclaw.json) and the
+ *   gateway is restarted, config.mode will be set and full activation runs.
  *
  * The plugin degrades gracefully:
- *   - If the binary isn't found, it logs an error but still registers
+ *   - If the binary isn't found, logs an error but still registers
  *     the provider and hook (the user may be running BitRouter externally).
  *   - If health checks fail, the routing hook becomes a no-op (falls
  *     through to OpenClaw's native model resolution).
@@ -54,19 +66,69 @@ export function activate(api: OpenClawPluginApi): void {
     metrics: null,
   };
 
+  // ── Always register the provider so the auth wizard is reachable ──
+  //
+  // This must happen even before mode is checked, so the user can always
+  // run `openclaw models auth login --provider bitrouter` regardless of
+  // whether they've completed setup.
+  try {
+    registerBitrouterProvider(api, config, state);
+  } catch (err) {
+    api.log.error(`Failed to register BitRouter provider: ${err}`);
+  }
+
+  // ── Always register CLI alias ─────────────────────────────────────
+  //
+  // `openclaw bitrouter setup` is a discoverable alias for the wizard.
+  try {
+    api.registerCli(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ({ program }: { program: any }) => {
+        program
+          .command("bitrouter setup")
+          .description(
+            "Configure BitRouter (first-run setup wizard). " +
+              "Equivalent to: openclaw models auth login --provider bitrouter"
+          )
+          .action(() => {
+            // Print redirect hint — the actual wizard runs via models auth login.
+            // We can't easily invoke it directly here without reimplementing
+            // the auth flow runner, so we guide the user.
+            console.log(
+              "\nBitRouter setup wizard:\n" +
+                "  openclaw models auth login --provider bitrouter\n\n" +
+                "Choose 'BYOK' to enter your API key, or 'BitRouter Cloud'\n" +
+                "to sign in (coming soon).\n"
+            );
+          });
+      },
+      { commands: ["bitrouter"] }
+    );
+  } catch (err) {
+    // Non-fatal — CLI alias is a convenience, not required.
+    api.log.warn(`Failed to register bitrouter CLI alias: ${err}`);
+  }
+
+  // ── Check if setup has been completed ────────────────────────────
+  //
+  // If mode is unset, emit a clear hint and stop here. The daemon won't
+  // start and no tools or hooks will be registered until setup is done.
+  if (!config.mode) {
+    api.log.warn(
+      "BitRouter plugin is installed but not yet configured. " +
+        "Run: openclaw models auth login --provider bitrouter"
+    );
+    return;
+  }
+
+  // ── Full activation (mode is set) ────────────────────────────────
+
   // Register the daemon service (spawn/stop bitrouter).
   try {
     registerBitrouterService(api, config, state);
   } catch (err) {
     api.log.error(`Failed to register BitRouter service: ${err}`);
     // Continue — the user may run BitRouter externally.
-  }
-
-  // Register "bitrouter" as a provider pointing to localhost.
-  try {
-    registerBitrouterProvider(api, config, state);
-  } catch (err) {
-    api.log.error(`Failed to register BitRouter provider: ${err}`);
   }
 
   // Hook into model resolution to selectively route through BitRouter.
@@ -97,9 +159,10 @@ export function activate(api: OpenClawPluginApi): void {
     api.log.error(`Failed to register gateway methods: ${err}`);
   }
 
+  const upstream = config.byok?.upstreamProvider ?? "unknown";
   api.log.info(
-    `BitRouter plugin activated (${state.baseUrl}, ` +
-      `interceptAll=${config.interceptAllModels ?? DEFAULTS.interceptAllModels})`
+    `BitRouter plugin activated (${state.baseUrl}, mode=${config.mode}, ` +
+      `upstream=${upstream}, interceptAll=${config.interceptAllModels ?? DEFAULTS.interceptAllModels})`
   );
 }
 

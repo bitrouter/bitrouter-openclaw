@@ -9,6 +9,29 @@
 
 import type { ChildProcess } from "node:child_process";
 
+// ── Setup mode ───────────────────────────────────────────────────────
+
+/**
+ * How the user wants to use BitRouter.
+ *
+ * "byok"  — bring-your-own-key: user provides upstream provider API key(s).
+ *           BitRouter holds them and proxies requests.
+ * "cloud" — sign in to BitRouterAI cloud (stub; OAuth coming in next version).
+ */
+export type SetupMode = "byok" | "cloud";
+
+/**
+ * BYOK upstream provider config — stored in pluginConfig after wizard runs.
+ * The apiKey is the raw key string (stored in openclaw's credential store
+ * via ProviderAuthResult.profiles, not in plain config).
+ */
+export interface BitrouterByokConfig {
+  /** Upstream provider id: "openrouter" | "openai" | "anthropic" | custom */
+  upstreamProvider: string;
+  /** Custom API base URL (optional — defaults to provider's public URL). */
+  apiBase?: string;
+}
+
 // ── Plugin configuration (from openclaw.plugin.json configSchema) ────
 
 /** Root plugin config — matches the configSchema in openclaw.plugin.json. */
@@ -21,6 +44,10 @@ export interface BitrouterPluginConfig {
   providers?: Record<string, ProviderEntry>;
   models?: Record<string, ModelEntry>;
   routing?: RoutingConfig;
+  /** Set by the first-run wizard. Undefined = not yet configured. */
+  mode?: SetupMode;
+  /** BYOK upstream provider config. Set when mode === "byok". */
+  byok?: BitrouterByokConfig;
 }
 
 /** A single provider entry in the plugin config (camelCase, TS-side). */
@@ -236,6 +263,12 @@ export interface OpenClawPluginApi {
     handler: () => Promise<unknown>
   ): void;
 
+  /** Register a CLI subcommand under the openclaw binary. */
+  registerCli(
+    registrar: (ctx: { program: unknown; config: Record<string, unknown>; logger: OpenClawPluginApi["log"] }) => void | Promise<void>,
+    opts?: { commands?: string[] }
+  ): void;
+
   /** Structured logger scoped to this plugin. */
   log: {
     info(msg: string, ...args: unknown[]): void;
@@ -244,23 +277,63 @@ export interface OpenClawPluginApi {
   };
 }
 
+// ── Provider auth types (matching real OpenClaw SDK) ─────────────────
+
+/** A select option in the wizard prompter. */
+export interface WizardSelectOption<T = string> {
+  value: T;
+  label: string;
+  hint?: string;
+}
+
+/** Real WizardPrompter surface (from openclaw/plugin-sdk/wizard/prompts). */
+export interface WizardPrompter {
+  intro(title: string): Promise<void>;
+  outro(message: string): Promise<void>;
+  note(message: string, title?: string): Promise<void>;
+  select<T>(params: {
+    message: string;
+    options: Array<WizardSelectOption<T>>;
+    initialValue?: T;
+  }): Promise<T>;
+  multiselect<T>(params: {
+    message: string;
+    options: Array<WizardSelectOption<T>>;
+    initialValues?: T[];
+    searchable?: boolean;
+  }): Promise<T[]>;
+  text(params: {
+    message: string;
+    initialValue?: string;
+    placeholder?: string;
+    validate?: (value: string) => string | undefined;
+  }): Promise<string>;
+  confirm(params: { message: string; initialValue?: boolean }): Promise<boolean>;
+  progress(label: string): { update(msg: string): void; stop(msg?: string): void };
+}
+
+/** Context passed to a provider's auth run() function (matches real SDK). */
+export interface ProviderAuthContext {
+  config: Record<string, unknown>;
+  agentDir?: string;
+  workspaceDir?: string;
+  prompter: WizardPrompter;
+  runtime: unknown;
+  isRemote: boolean;
+  openUrl: (url: string) => Promise<void>;
+  oauth: { createVpsAwareHandlers: unknown };
+}
+
 /** A single auth method offered by a provider. */
 export interface ProviderAuthMethod {
   id: string;
   label: string;
-  kind: "api_key" | "oauth";
+  hint?: string;
+  kind: "api_key" | "oauth" | "token" | "device_code" | "custom";
   run: (ctx: ProviderAuthContext) => Promise<ProviderAuthResult>;
 }
 
-/** Context passed to a provider's auth run() function. */
-export interface ProviderAuthContext {
-  /** Prompt the user for input (e.g. an API key). */
-  prompter: {
-    prompt(opts: { message: string; type?: "text" | "password" }): Promise<string>;
-  };
-}
-
-/** Result returned from a provider's auth run() function. */
+/** Result returned from a provider's auth run() function (matches real SDK). */
 export interface ProviderAuthResult {
   profiles: Array<{
     profileId: string;
@@ -270,6 +343,12 @@ export interface ProviderAuthResult {
       key: string;
     };
   }>;
+  /** Partial OpenClaw config to merge into openclaw.json. */
+  configPatch?: Record<string, unknown>;
+  /** Suggest a default model after auth. */
+  defaultModel?: string;
+  /** Advisory messages shown to the user after auth. */
+  notes?: string[];
 }
 
 /** Event object passed to the before_model_resolve hook. */

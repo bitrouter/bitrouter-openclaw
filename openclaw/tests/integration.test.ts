@@ -62,6 +62,9 @@ function createMockApi(config: BitrouterPluginConfig = {}) {
     registerGatewayMethod() {
       // no-op for integration tests
     },
+    registerCli() {
+      // no-op for integration tests
+    },
     on(event, handler) {
       registrations.hooks.push({ event, handler });
     },
@@ -293,6 +296,9 @@ describe("Integration: plugin against live BitRouter", () => {
       const config: BitrouterPluginConfig = {
         port: 8787,
         host: "127.0.0.1",
+        // mode must be set for full activation (first-run gate)
+        mode: "byok",
+        byok: { upstreamProvider: "openrouter" },
         providers: {
           openrouter: {
             derives: "openai",

@@ -123,7 +123,7 @@ describe("registerBitrouterService", () => {
     expect(resolveBinaryPath).toHaveBeenCalledWith("/tmp");
     expect(spawn).toHaveBeenCalledWith(
       "/usr/local/bin/bitrouter",
-      ["--home-dir", expect.any(String), "serve"],
+      ["--home-dir", expect.any(String), "--db", "", "serve"],
       expect.objectContaining({
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,

@@ -15,6 +15,8 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 import type {
   BitrouterPluginConfig,
@@ -44,7 +46,15 @@ export function registerBitrouterService(
     start: async () => {
       // 1. Resolve home directory and write config files.
       state.homeDir = resolveHomeDir(api);
-      writeConfigToDir(config, state.homeDir);
+
+      // For BYOK mode, synthesize a provider entry from the stored credential.
+      // The wizard writes the API key into the auth-profiles credential store;
+      // we read it back here so BitRouter's YAML can reference it.
+      const effectiveConfig = buildEffectiveConfig(config, state.homeDir);
+
+      // inlineSecrets: true because we run with --db "" (no-auth mode),
+      // so BitRouter cannot load a .env file — keys must be in the YAML.
+      writeConfigToDir(effectiveConfig, state.homeDir, { inlineSecrets: true });
       api.log.info(`Config written to ${state.homeDir}`);
 
       // 2. Find the binary (downloads from GitHub releases if not cached).
@@ -65,10 +75,21 @@ export function registerBitrouterService(
       //
       // The --home-dir flag ensures BitRouter reads our generated config
       // rather than any user-level ~/.bitrouter config.
-      const child = spawn(binaryPath, ["--home-dir", state.homeDir, "serve"], {
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: false,
-      });
+      //
+      // Option B (local dev): pass --db "" to force BitRouter into
+      // auth-disabled mode. When the DB connection string is empty/invalid,
+      // BitRouter skips JWT auth entirely and accepts any bearer token.
+      // This is a side-effect of a failed DB init, not a stable API —
+      // tracked for replacement with Option A (plugin-generated JWT) once
+      // BitRouter exposes a proper no-auth flag or token-injection path.
+      const child = spawn(
+        binaryPath,
+        ["--home-dir", state.homeDir, "--db", "", "serve"],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+          detached: false,
+        }
+      );
 
       state.process = child;
 
@@ -152,6 +173,142 @@ export function registerBitrouterService(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Build an effective plugin config for BYOK mode.
+ *
+ * When mode is "byok", we read the stored API key from the BitRouter home
+ * dir's .env file (written by setup.ts) and synthesize a provider entry
+ * for the upstream provider chosen during setup.
+ *
+ * For other modes or when no BYOK credential is found, returns config as-is.
+ */
+function buildEffectiveConfig(
+  config: BitrouterPluginConfig,
+  homeDir: string
+): BitrouterPluginConfig {
+  if (config.mode !== "byok" || !config.byok?.upstreamProvider) {
+    return config;
+  }
+
+  const { upstreamProvider, apiBase } = config.byok;
+
+  // Read the API key from the .env file written by the wizard.
+  const envPath = path.join(homeDir, ".env");
+  let apiKey: string | undefined;
+
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, "utf-8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIdx = trimmed.indexOf("=");
+      if (eqIdx > 0) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        const value = trimmed.slice(eqIdx + 1).trim();
+        // Match UPSTREAMNAME_API_KEY pattern
+        const expectedKey = `${upstreamProvider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+        if (key === expectedKey && value) {
+          apiKey = value;
+          break;
+        }
+      }
+    }
+  }
+
+  // Default model routes: map well-known virtual model names to the upstream
+  // provider. This lets BitRouter resolve requests without a DB, covering
+  // the common models OpenClaw sends (auto, latest, etc.).
+  const defaultModelRoutes = buildDefaultModelRoutes(upstreamProvider);
+
+  if (!apiKey) {
+    // No key in .env — BitRouter will pick it up from env vars if set
+    // (e.g. OPENROUTER_API_KEY in the shell environment).
+    return {
+      ...config,
+      providers: {
+        ...config.providers,
+        [upstreamProvider]: {
+          ...(apiBase ? { apiBase } : resolveProviderApiBase(upstreamProvider)),
+          ...(upstreamProvider === "openai" ? {} : { derives: "openai" }),
+        },
+      },
+      models: { ...config.models, ...defaultModelRoutes },
+    };
+  }
+
+  // Build a synthesized provider entry with the stored API key.
+  // If the user supplied an apiBase via config.byok.apiBase, use that.
+  // Otherwise fall back to the canonical base URL for well-known providers.
+  return {
+    ...config,
+    providers: {
+      ...config.providers,
+      [upstreamProvider]: {
+        apiKey,
+        ...(apiBase ? { apiBase } : resolveProviderApiBase(upstreamProvider)),
+        ...(upstreamProvider === "openai" ? {} : { derives: "openai" }),
+      },
+    },
+    models: { ...config.models, ...defaultModelRoutes },
+  };
+}
+
+/**
+ * Return the canonical OpenAI-compatible base URL for well-known providers.
+ * BitRouter's `derives: openai` only inherits the auth scheme, not the URL;
+ * we must supply `api_base` explicitly for non-OpenAI providers.
+ */
+function resolveProviderApiBase(
+  provider: string
+): { apiBase: string } | Record<string, never> {
+  const bases: Record<string, string> = {
+    openrouter: "https://openrouter.ai/api/v1",
+    anthropic: "https://api.anthropic.com/v1",
+    // openai uses the default baked into BitRouter — no override needed
+  };
+  return provider in bases ? { apiBase: bases[provider] } : {};
+}
+
+/**
+ * Build default model→provider routes for BYOK mode.
+ *
+ * Maps common virtual model names to the chosen upstream provider so
+ * BitRouter can resolve requests without a persistent DB. OpenClaw
+ * sends model names like "auto", "openrouter/auto" etc.; we normalise
+ * them here. The provider:modelId pairs are passed-through as-is
+ * (e.g. OpenRouter accepts "auto" as a valid model identifier).
+ */
+function buildDefaultModelRoutes(
+  upstreamProvider: string
+): Record<string, { strategy: "priority"; endpoints: Array<{ provider: string; modelId: string }> }> {
+  // Virtual names that map to the provider's default model.
+  //
+  // For OpenRouter, avoid "auto" — it currently resolves to reasoning models
+  // (gpt-5-nano etc.) that return content:null, which BitRouter v0.4.0 cannot
+  // parse. Use a stable non-reasoning model instead.
+  // For other providers, use a sensible default.
+  const autoModelIds: Record<string, string> = {
+    openrouter: "anthropic/claude-3-haiku",
+    openai: "gpt-4o",
+    anthropic: "claude-3-5-haiku-20241022",
+    other: "default",
+  };
+
+  const autoModelId = autoModelIds[upstreamProvider] ?? "auto";
+
+  // Cover the common names OpenClaw might send:
+  const virtualNames = ["auto", "default", `${upstreamProvider}/auto`];
+
+  const routes: Record<string, { strategy: "priority"; endpoints: Array<{ provider: string; modelId: string }> }> = {};
+  for (const name of virtualNames) {
+    routes[name] = {
+      strategy: "priority",
+      endpoints: [{ provider: upstreamProvider, modelId: autoModelId }],
+    };
+  }
+  return routes;
+}
 
 /** Wait for a child process to emit the 'exit' event. */
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {

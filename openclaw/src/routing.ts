@@ -205,6 +205,14 @@ export function registerModelInterceptor(
   config: BitrouterPluginConfig,
   state: BitrouterState
 ): void {
+  // interceptAll logic:
+  // - When mode is "byok" or "cloud", routing works by redirecting the
+  //   existing provider's baseUrl through BitRouter (set via configPatch
+  //   in setup.ts). The before_model_resolve hook is NOT needed for this
+  //   path — OpenClaw sends to openrouter but hits BitRouter's URL.
+  // - interceptAllModels: true can still be explicitly set to force all
+  //   requests through the "bitrouter" provider override (advanced usage).
+  // - Default: false (transparent URL-redirect is enough).
   const interceptAll = config.interceptAllModels ?? DEFAULTS.interceptAllModels;
 
   api.on("before_model_resolve", (event: ModelResolveEvent) => {
