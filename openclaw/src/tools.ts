@@ -7,7 +7,8 @@
  */
 
 import { execFile } from "node:child_process";
-import { Type, type TObject } from "@sinclair/typebox";
+import { Type } from "@sinclair/typebox";
+import { toEnvVarKey } from "./config.js";
 import { resolveBinaryPath } from "./binary.js";
 import { readFeedback } from "./feedback.js";
 import { getModelTier, type ModelTier } from "./model-tiers.js";
@@ -34,16 +35,69 @@ function jsonResult(data: unknown): ToolResult {
   return textResult(JSON.stringify(data, null, 2));
 }
 
+/**
+ * Wrap a ToolResult-returning execute function into a factory-compatible tool.
+ * The real SDK expects AgentToolResult { content, details } — we translate.
+ */
+function makeToolFactory(
+  def: {
+    name: string;
+    description: string;
+    parameters: unknown;
+    execute: (
+      id: string,
+      params: Record<string, unknown>
+    ) => Promise<ToolResult>;
+  },
+  opts?: { optional?: boolean }
+) {
+  return {
+    factory: () => ({
+      name: def.name,
+      label: def.name,
+      description: def.description,
+      parameters: def.parameters,
+      execute: async (
+        toolCallId: string,
+        params: Record<string, unknown>
+      ) => {
+        const res = await def.execute(toolCallId, params);
+        const text = res.content.map((c) => c.text).join("\n");
+        return {
+          content: [{ type: "text" as const, text: res.isError ? `Error: ${text}` : text }],
+          details: undefined,
+        };
+      },
+    }),
+    opts,
+  };
+}
+
 // ── Tool registration ────────────────────────────────────────────────
 
 export function registerAgentTools(
   api: OpenClawPluginApi,
   config: BitrouterPluginConfig,
-  state: BitrouterState
+  state: BitrouterState,
+  stateDirRef: { value: string }
 ): void {
+  // Helper to register a tool using the factory pattern.
+  const register = (
+    def: {
+      name: string;
+      description: string;
+      parameters: unknown;
+      execute: (id: string, params: Record<string, unknown>) => Promise<ToolResult>;
+    },
+    opts?: { optional?: boolean }
+  ) => {
+    const { factory, opts: toolOpts } = makeToolFactory(def, opts);
+    api.registerTool(factory as never, toolOpts);
+  };
+
   // ── bitrouter_status ─────────────────────────────────────────────
 
-  api.registerTool(
+  register(
     {
       name: "bitrouter_status",
       description:
@@ -92,7 +146,7 @@ export function registerAgentTools(
 
   // ── bitrouter_list_providers ─────────────────────────────────────
 
-  api.registerTool(
+  register(
     {
       name: "bitrouter_list_providers",
       description:
@@ -107,8 +161,9 @@ export function registerAgentTools(
         // From config
         if (config.providers) {
           for (const [name, entry] of Object.entries(config.providers)) {
-            const prefix = entry.envPrefix ?? name.toUpperCase();
-            const envKey = `${prefix}_API_KEY`;
+            const envKey = entry.envPrefix
+              ? `${entry.envPrefix}_API_KEY`
+              : toEnvVarKey(name);
             providers[name] = {
               source: "config",
               hasApiKey:
@@ -120,10 +175,9 @@ export function registerAgentTools(
         // From discovered routes (dedup)
         for (const r of state.knownRoutes) {
           if (!providers[r.provider]) {
-            const envKey = `${r.provider.toUpperCase()}_API_KEY`;
             providers[r.provider] = {
               source: "discovered",
-              hasApiKey: !!process.env[envKey],
+              hasApiKey: !!process.env[toEnvVarKey(r.provider)],
             };
           }
         }
@@ -136,7 +190,7 @@ export function registerAgentTools(
 
   // ── bitrouter_list_routes ────────────────────────────────────────
 
-  api.registerTool(
+  register(
     {
       name: "bitrouter_list_routes",
       description:
@@ -204,7 +258,7 @@ export function registerAgentTools(
 
   // ── bitrouter_create_route ───────────────────────────────────────
 
-  api.registerTool(
+  register(
     {
       name: "bitrouter_create_route",
       description:
@@ -296,7 +350,7 @@ export function registerAgentTools(
 
   // ── bitrouter_delete_route ───────────────────────────────────────
 
-  api.registerTool(
+  register(
     {
       name: "bitrouter_delete_route",
       description:
@@ -330,7 +384,7 @@ export function registerAgentTools(
 
   // ── bitrouter_route_metrics ─────────────────────────────────────
 
-  api.registerTool(
+  register(
     {
       name: "bitrouter_route_metrics",
       description:
@@ -362,7 +416,7 @@ export function registerAgentTools(
 
   // ── bitrouter_route_task ──────────────────────────────────────────
 
-  api.registerTool(
+  register(
     {
       name: "bitrouter_route_task",
       description:
@@ -491,7 +545,7 @@ export function registerAgentTools(
         });
 
         // Check feedback for task-specific failures.
-        const feedback = readFeedback(api.getDataDir(), 50);
+        const feedback = readFeedback(stateDirRef.value, 50);
         const failCounts: Record<string, number> = {};
         for (const f of feedback) {
           if (f.taskType === taskType && f.outcome === "failure") {
@@ -535,7 +589,7 @@ export function registerAgentTools(
 
   // ── bitrouter_create_token ───────────────────────────────────────
 
-  api.registerTool(
+  register(
     {
       name: "bitrouter_create_token",
       description:
@@ -582,7 +636,7 @@ export function registerAgentTools(
 
         let binaryPath: string;
         try {
-          binaryPath = await resolveBinaryPath(api.getDataDir());
+          binaryPath = await resolveBinaryPath(stateDirRef.value);
         } catch (err) {
           return errorResult(`Failed to resolve BitRouter binary: ${err}`);
         }

@@ -13,7 +13,9 @@ import type {
   EndpointMetrics,
   MetricsResponse,
   OpenClawPluginApi,
-  ModelResolveEvent,
+  PluginHookBeforeModelResolveEvent,
+  PluginHookAgentContext,
+  PluginHookBeforeModelResolveResult,
 } from "../src/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -32,22 +34,40 @@ function createMockState(overrides?: Partial<BitrouterState>): BitrouterState {
   };
 }
 
-function createMockApi(): OpenClawPluginApi {
+/**
+ * Create a mock OpenClawPluginApi.
+ * `model` sets the default model name that resolveModelName() will find
+ * when looking up agent config.
+ */
+function createMockApi(model = "default") {
   return {
     registerService: vi.fn(),
     registerProvider: vi.fn(),
     registerTool: vi.fn(),
     registerHttpRoute: vi.fn(),
     registerGatewayMethod: vi.fn(),
+    registerCli: vi.fn(),
     on: vi.fn(),
-    getConfig: vi.fn(() => ({})),
-    getDataDir: vi.fn(() => "/tmp"),
-    log: {
+    pluginConfig: {},
+    config: {
+      agents: {
+        defaults: { model: { primary: model } },
+      },
+    },
+    logger: {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
     },
-  };
+  } as unknown as OpenClawPluginApi;
+}
+
+/** Extract the before_model_resolve handler from a mock api. */
+function extractHookHandler(api: OpenClawPluginApi) {
+  return (api.on as ReturnType<typeof vi.fn>).mock.calls[0][1] as (
+    event: PluginHookBeforeModelResolveEvent,
+    ctx: PluginHookAgentContext
+  ) => PluginHookBeforeModelResolveResult | void;
 }
 
 // ── refreshRoutes ────────────────────────────────────────────────────
@@ -76,7 +96,7 @@ describe("refreshRoutes", () => {
     await refreshRoutes(state, api);
 
     expect(state.knownRoutes).toEqual(routes);
-    expect(api.log.info).toHaveBeenCalledWith(
+    expect(api.logger.info).toHaveBeenCalledWith(
       "Loaded 2 route(s) from BitRouter"
     );
   });
@@ -96,7 +116,7 @@ describe("refreshRoutes", () => {
 
     // Routes should be preserved, not cleared.
     expect(state.knownRoutes).toEqual(existingRoutes);
-    expect(api.log.warn).toHaveBeenCalled();
+    expect(api.logger.warn).toHaveBeenCalled();
   });
 
   it("preserves existing routes on non-200 response", async () => {
@@ -135,26 +155,18 @@ describe("registerModelInterceptor", () => {
   });
 
   it("does not intercept when BitRouter is unhealthy", () => {
-    const api = createMockApi();
+    const api = createMockApi("fast");
     const state = createMockState({ healthy: false });
     registerModelInterceptor(api, {}, state);
 
-    // Extract the registered handler.
-    const handler = (api.on as ReturnType<typeof vi.fn>).mock.calls[0][1] as (
-      event: ModelResolveEvent
-    ) => void;
+    const handler = extractHookHandler(api);
+    const result = handler({ prompt: "test" }, { agentId: "main" });
 
-    const event: ModelResolveEvent = {
-      model: "fast",
-      override: vi.fn(),
-    };
-    handler(event);
-
-    expect(event.override).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
   });
 
   it("intercepts known models in selective mode", () => {
-    const api = createMockApi();
+    const api = createMockApi("fast");
     const state = createMockState({
       knownRoutes: [
         { model: "fast", provider: "openai", protocol: "openai" },
@@ -163,24 +175,17 @@ describe("registerModelInterceptor", () => {
     const config: BitrouterPluginConfig = { interceptAllModels: false };
     registerModelInterceptor(api, config, state);
 
-    const handler = (api.on as ReturnType<typeof vi.fn>).mock.calls[0][1] as (
-      event: ModelResolveEvent
-    ) => void;
+    const handler = extractHookHandler(api);
+    const result = handler({ prompt: "test" }, { agentId: "main" });
 
-    const event: ModelResolveEvent = {
-      model: "fast",
-      override: vi.fn(),
-    };
-    handler(event);
-
-    expect(event.override).toHaveBeenCalledWith({
-      provider: "bitrouter",
-      model: "fast",
+    expect(result).toEqual({
+      providerOverride: "bitrouter",
+      modelOverride: "fast",
     });
   });
 
   it("ignores unknown models in selective mode", () => {
-    const api = createMockApi();
+    const api = createMockApi("unknown-model");
     const state = createMockState({
       knownRoutes: [
         { model: "fast", provider: "openai", protocol: "openai" },
@@ -189,44 +194,30 @@ describe("registerModelInterceptor", () => {
     const config: BitrouterPluginConfig = { interceptAllModels: false };
     registerModelInterceptor(api, config, state);
 
-    const handler = (api.on as ReturnType<typeof vi.fn>).mock.calls[0][1] as (
-      event: ModelResolveEvent
-    ) => void;
-
-    const event: ModelResolveEvent = {
-      model: "unknown-model",
-      override: vi.fn(),
-    };
-    handler(event);
+    const handler = extractHookHandler(api);
+    const result = handler({ prompt: "test" }, { agentId: "main" });
 
     // Should NOT redirect — fall through to OpenClaw's native resolution.
-    expect(event.override).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
   });
 
   it("intercepts ALL models when interceptAllModels is true", () => {
-    const api = createMockApi();
+    const api = createMockApi("anything-at-all");
     const state = createMockState({ knownRoutes: [] }); // No routes cached.
     const config: BitrouterPluginConfig = { interceptAllModels: true };
     registerModelInterceptor(api, config, state);
 
-    const handler = (api.on as ReturnType<typeof vi.fn>).mock.calls[0][1] as (
-      event: ModelResolveEvent
-    ) => void;
+    const handler = extractHookHandler(api);
+    const result = handler({ prompt: "test" }, { agentId: "main" });
 
-    const event: ModelResolveEvent = {
-      model: "anything-at-all",
-      override: vi.fn(),
-    };
-    handler(event);
-
-    expect(event.override).toHaveBeenCalledWith({
-      provider: "bitrouter",
-      model: "anything-at-all",
+    expect(result).toEqual({
+      providerOverride: "bitrouter",
+      modelOverride: "anything-at-all",
     });
   });
 
   it("dynamic route takes priority over static route with same name", () => {
-    const api = createMockApi();
+    const api = createMockApi("fast");
     const state = createMockState({
       knownRoutes: [
         { model: "fast", provider: "openai", protocol: "openai" },
@@ -242,25 +233,18 @@ describe("registerModelInterceptor", () => {
     const config: BitrouterPluginConfig = { interceptAllModels: false };
     registerModelInterceptor(api, config, state);
 
-    const handler = (api.on as ReturnType<typeof vi.fn>).mock.calls[0][1] as (
-      event: ModelResolveEvent
-    ) => void;
-
-    const event: ModelResolveEvent = {
-      model: "fast",
-      override: vi.fn(),
-    };
-    handler(event);
+    const handler = extractHookHandler(api);
+    const result = handler({ prompt: "test" }, { agentId: "main" });
 
     // Should use the dynamic route's resolved provider:modelId
-    expect(event.override).toHaveBeenCalledWith({
-      provider: "bitrouter",
-      model: "anthropic:claude-sonnet",
+    expect(result).toEqual({
+      providerOverride: "bitrouter",
+      modelOverride: "anthropic:claude-sonnet",
     });
   });
 
   it("deleting dynamic route restores static resolution", () => {
-    const api = createMockApi();
+    const api = createMockApi("fast");
     const state = createMockState({
       knownRoutes: [
         { model: "fast", provider: "openai", protocol: "openai" },
@@ -279,20 +263,13 @@ describe("registerModelInterceptor", () => {
     // Delete the dynamic route
     state.dynamicRoutes.delete("fast");
 
-    const handler = (api.on as ReturnType<typeof vi.fn>).mock.calls[0][1] as (
-      event: ModelResolveEvent
-    ) => void;
-
-    const event: ModelResolveEvent = {
-      model: "fast",
-      override: vi.fn(),
-    };
-    handler(event);
+    const handler = extractHookHandler(api);
+    const result = handler({ prompt: "test" }, { agentId: "main" });
 
     // Should fall back to static route resolution
-    expect(event.override).toHaveBeenCalledWith({
-      provider: "bitrouter",
-      model: "fast",
+    expect(result).toEqual({
+      providerOverride: "bitrouter",
+      modelOverride: "fast",
     });
   });
 });

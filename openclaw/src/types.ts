@@ -193,171 +193,64 @@ export interface BitrouterState {
   metrics: MetricsResponse | null;
 }
 
-// ── OpenClaw Plugin API type stubs ───────────────────────────────────
+// ── Re-exports from OpenClaw plugin SDK ──────────────────────────────
 //
-// These are minimal type declarations for the OpenClaw plugin API surface
-// that this plugin uses. In production, these would come from @openclaw/sdk.
-// For now, we declare them here so the plugin compiles without the SDK.
+// The plugin uses the real OpenClaw SDK types directly.
+// Re-exported here so all modules can import from "./types.js".
+//
+// Note: only types that are re-exported through the SDK barrel are listed here.
+// Types defined in the SDK but not in its barrel are defined locally below.
 
-export interface OpenClawPluginApi {
-  /** Register a managed service with start/stop lifecycle. */
-  registerService(opts: {
-    id: string;
-    start: () => Promise<void>;
-    stop: () => Promise<void>;
-  }): void;
+export type {
+  OpenClawPluginApi,
+  OpenClawPluginServiceContext,
+  OpenClawPluginService,
+  PluginLogger,
+  ProviderAuthContext,
+  ProviderAuthResult,
+  AnyAgentTool,
+  GatewayRequestHandlerOptions,
+} from "openclaw/plugin-sdk";
 
-  /** Register an LLM provider. */
-  registerProvider(opts: {
-    id: string;
-    label: string;
-    baseUrl?: string;
-    auth?: ProviderAuthMethod[];
-  }): void;
+// ── Locally-defined types matching SDK internals ─────────────────────
+//
+// These types exist in the SDK's .d.ts files but are not re-exported
+// through the openclaw/plugin-sdk barrel. We define structural
+// equivalents here based on the SDK's declarations.
 
-  /**
-   * Listen for plugin lifecycle events.
-   *
-   * The `before_model_resolve` hook fires before the agent runtime selects
-   * a model. The handler can call `event.override()` to redirect the
-   * request to a different provider/model.
-   */
-  on(
-    event: "before_model_resolve",
-    handler: (event: ModelResolveEvent) => void
-  ): void;
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
-  /** Get this plugin's resolved config (merged with defaults). */
-  getConfig(): BitrouterPluginConfig;
+/** Plugin definition — the default export shape. */
+export type OpenClawPluginDefinition = {
+  id?: string;
+  name?: string;
+  description?: string;
+  version?: string;
+  register?: (api: OpenClawPluginApi) => void | Promise<void>;
+  activate?: (api: OpenClawPluginApi) => void | Promise<void>;
+};
 
-  /** Get the plugin's data directory (persistent across restarts). */
-  getDataDir(): string;
+/** Hook event for before_model_resolve. */
+export type PluginHookBeforeModelResolveEvent = {
+  prompt: string;
+};
 
-  /** Register an agent-callable tool. */
-  registerTool(
-    definition: {
-      name: string;
-      description: string;
-      parameters: unknown;
-      execute: (
-        id: string,
-        params: Record<string, unknown>
-      ) => Promise<ToolResult>;
-    },
-    opts?: { optional?: boolean }
-  ): void;
+/** Hook result for before_model_resolve. */
+export type PluginHookBeforeModelResolveResult = {
+  modelOverride?: string;
+  providerOverride?: string;
+};
 
-  /** Register an HTTP route on the OpenClaw gateway. */
-  registerHttpRoute(opts: {
-    method: "GET" | "POST" | "PUT" | "DELETE";
-    path: string;
-    handler: (req: {
-      body: unknown;
-      query: Record<string, string>;
-    }) => Promise<{ status: number; body: unknown }>;
-  }): void;
-
-  /** Register an RPC method on the OpenClaw gateway. */
-  registerGatewayMethod(
-    name: string,
-    handler: () => Promise<unknown>
-  ): void;
-
-  /** Register a CLI subcommand under the openclaw binary. */
-  registerCli(
-    registrar: (ctx: { program: unknown; config: Record<string, unknown>; logger: OpenClawPluginApi["log"] }) => void | Promise<void>,
-    opts?: { commands?: string[] }
-  ): void;
-
-  /** Structured logger scoped to this plugin. */
-  log: {
-    info(msg: string, ...args: unknown[]): void;
-    warn(msg: string, ...args: unknown[]): void;
-    error(msg: string, ...args: unknown[]): void;
-  };
-}
-
-// ── Provider auth types (matching real OpenClaw SDK) ─────────────────
-
-/** A select option in the wizard prompter. */
-export interface WizardSelectOption<T = string> {
-  value: T;
-  label: string;
-  hint?: string;
-}
-
-/** Real WizardPrompter surface (from openclaw/plugin-sdk/wizard/prompts). */
-export interface WizardPrompter {
-  intro(title: string): Promise<void>;
-  outro(message: string): Promise<void>;
-  note(message: string, title?: string): Promise<void>;
-  select<T>(params: {
-    message: string;
-    options: Array<WizardSelectOption<T>>;
-    initialValue?: T;
-  }): Promise<T>;
-  multiselect<T>(params: {
-    message: string;
-    options: Array<WizardSelectOption<T>>;
-    initialValues?: T[];
-    searchable?: boolean;
-  }): Promise<T[]>;
-  text(params: {
-    message: string;
-    initialValue?: string;
-    placeholder?: string;
-    validate?: (value: string) => string | undefined;
-  }): Promise<string>;
-  confirm(params: { message: string; initialValue?: boolean }): Promise<boolean>;
-  progress(label: string): { update(msg: string): void; stop(msg?: string): void };
-}
-
-/** Context passed to a provider's auth run() function (matches real SDK). */
-export interface ProviderAuthContext {
-  config: Record<string, unknown>;
-  agentDir?: string;
+/** Agent context passed to hooks. */
+export type PluginHookAgentContext = {
+  agentId?: string;
+  sessionKey?: string;
+  sessionId?: string;
   workspaceDir?: string;
-  prompter: WizardPrompter;
-  runtime: unknown;
-  isRemote: boolean;
-  openUrl: (url: string) => Promise<void>;
-  oauth: { createVpsAwareHandlers: unknown };
-}
-
-/** A single auth method offered by a provider. */
-export interface ProviderAuthMethod {
-  id: string;
-  label: string;
-  hint?: string;
-  kind: "api_key" | "oauth" | "token" | "device_code" | "custom";
-  run: (ctx: ProviderAuthContext) => Promise<ProviderAuthResult>;
-}
-
-/** Result returned from a provider's auth run() function (matches real SDK). */
-export interface ProviderAuthResult {
-  profiles: Array<{
-    profileId: string;
-    credential: {
-      type: "api_key";
-      provider: string;
-      key: string;
-    };
-  }>;
-  /** Partial OpenClaw config to merge into openclaw.json. */
-  configPatch?: Record<string, unknown>;
-  /** Suggest a default model after auth. */
-  defaultModel?: string;
-  /** Advisory messages shown to the user after auth. */
-  notes?: string[];
-}
-
-/** Event object passed to the before_model_resolve hook. */
-export interface ModelResolveEvent {
-  /** The model name requested by the agent (e.g. "gpt-4o", "claude-sonnet"). */
-  model: string;
-  /** Override the provider and optionally the model name. */
-  override(opts: { provider: string; model?: string }): void;
-}
+  messageProvider?: string;
+  trigger?: string;
+  channelId?: string;
+};
 
 // ── Config defaults ──────────────────────────────────────────────────
 

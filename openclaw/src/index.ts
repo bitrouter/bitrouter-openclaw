@@ -1,8 +1,8 @@
 /**
  * @bitrouter/openclaw-plugin — entry point.
  *
- * This is the main export that OpenClaw calls when the plugin is loaded.
- * It wires together all sub-modules:
+ * Exports an OpenClawPluginDefinition that OpenClaw loads directly.
+ * Wires together all sub-modules:
  *
  *   - service.ts  → daemon lifecycle (spawn/stop bitrouter)
  *   - provider.ts → register "bitrouter" as an LLM provider
@@ -33,6 +33,7 @@ import type {
   BitrouterPluginConfig,
   BitrouterState,
   OpenClawPluginApi,
+  OpenClawPluginDefinition,
 } from "./types.js";
 import { DEFAULTS } from "./types.js";
 import { resolveHomeDir } from "./config.js";
@@ -50,9 +51,13 @@ import { registerGatewayMethods } from "./gateway.js";
  * registration is independent: a failure in one doesn't block the others.
  */
 export function activate(api: OpenClawPluginApi): void {
-  const config: BitrouterPluginConfig = api.getConfig();
+  const config = (api.pluginConfig ?? {}) as BitrouterPluginConfig;
   const host = config.host ?? DEFAULTS.host;
   const port = config.port ?? DEFAULTS.port;
+
+  // Mutable ref for stateDir — set when the service's start(ctx) fires.
+  // Fallback covers provider/CLI registration that happens before service start.
+  const stateDirRef = { value: `${process.env.HOME}/.openclaw/plugins/bitrouter` };
 
   // Shared mutable state — passed by reference to all sub-modules.
   const state: BitrouterState = {
@@ -61,7 +66,7 @@ export function activate(api: OpenClawPluginApi): void {
     baseUrl: `http://${host}:${port}`,
     knownRoutes: [],
     healthCheckTimer: null,
-    homeDir: resolveHomeDir(api),
+    homeDir: resolveHomeDir(stateDirRef.value),
     dynamicRoutes: new Map(),
     metrics: null,
   };
@@ -74,7 +79,7 @@ export function activate(api: OpenClawPluginApi): void {
   try {
     registerBitrouterProvider(api, config, state);
   } catch (err) {
-    api.log.error(`Failed to register BitRouter provider: ${err}`);
+    api.logger.error(`Failed to register BitRouter provider: ${err}`);
   }
 
   // ── Always register CLI alias ─────────────────────────────────────
@@ -82,18 +87,14 @@ export function activate(api: OpenClawPluginApi): void {
   // `openclaw bitrouter setup` is a discoverable alias for the wizard.
   try {
     api.registerCli(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ({ program }: { program: any }) => {
-        program
+      ({ program }: { program: unknown }) => {
+        (program as { command(s: string): { description(s: string): { action(fn: () => void): void } } })
           .command("bitrouter setup")
           .description(
             "Configure BitRouter (first-run setup wizard). " +
               "Equivalent to: openclaw models auth login --provider bitrouter"
           )
           .action(() => {
-            // Print redirect hint — the actual wizard runs via models auth login.
-            // We can't easily invoke it directly here without reimplementing
-            // the auth flow runner, so we guide the user.
             console.log(
               "\nBitRouter setup wizard:\n" +
                 "  openclaw models auth login --provider bitrouter\n\n" +
@@ -106,7 +107,7 @@ export function activate(api: OpenClawPluginApi): void {
     );
   } catch (err) {
     // Non-fatal — CLI alias is a convenience, not required.
-    api.log.warn(`Failed to register bitrouter CLI alias: ${err}`);
+    api.logger.warn(`Failed to register bitrouter CLI alias: ${err}`);
   }
 
   // ── Check if setup has been completed ────────────────────────────
@@ -114,7 +115,7 @@ export function activate(api: OpenClawPluginApi): void {
   // If mode is unset, emit a clear hint and stop here. The daemon won't
   // start and no tools or hooks will be registered until setup is done.
   if (!config.mode) {
-    api.log.warn(
+    api.logger.warn(
       "BitRouter plugin is installed but not yet configured. " +
         "Run: openclaw models auth login --provider bitrouter"
     );
@@ -125,9 +126,9 @@ export function activate(api: OpenClawPluginApi): void {
 
   // Register the daemon service (spawn/stop bitrouter).
   try {
-    registerBitrouterService(api, config, state);
+    registerBitrouterService(api, config, state, stateDirRef);
   } catch (err) {
-    api.log.error(`Failed to register BitRouter service: ${err}`);
+    api.logger.error(`Failed to register BitRouter service: ${err}`);
     // Continue — the user may run BitRouter externally.
   }
 
@@ -135,36 +136,45 @@ export function activate(api: OpenClawPluginApi): void {
   try {
     registerModelInterceptor(api, config, state);
   } catch (err) {
-    api.log.error(`Failed to register model interceptor: ${err}`);
+    api.logger.error(`Failed to register model interceptor: ${err}`);
   }
 
   // Register agent tools for runtime route management.
   try {
-    registerAgentTools(api, config, state);
+    registerAgentTools(api, config, state, stateDirRef);
   } catch (err) {
-    api.log.error(`Failed to register agent tools: ${err}`);
+    api.logger.error(`Failed to register agent tools: ${err}`);
   }
 
   // Register HTTP feedback endpoint.
   try {
-    registerFeedbackRoute(api);
+    registerFeedbackRoute(api, stateDirRef);
   } catch (err) {
-    api.log.error(`Failed to register feedback route: ${err}`);
+    api.logger.error(`Failed to register feedback route: ${err}`);
   }
 
   // Register gateway RPC methods.
   try {
     registerGatewayMethods(api, state);
   } catch (err) {
-    api.log.error(`Failed to register gateway methods: ${err}`);
+    api.logger.error(`Failed to register gateway methods: ${err}`);
   }
 
   const upstream = config.byok?.upstreamProvider ?? "unknown";
-  api.log.info(
+  api.logger.info(
     `BitRouter plugin activated (${state.baseUrl}, mode=${config.mode}, ` +
       `upstream=${upstream}, interceptAll=${config.interceptAllModels ?? DEFAULTS.interceptAllModels})`
   );
 }
 
-// Default export for OpenClaw plugin loading.
-export default activate;
+// OpenClaw plugin definition — the default export.
+const plugin: OpenClawPluginDefinition = {
+  id: "bitrouter",
+  name: "BitRouter",
+  description:
+    "Route LLM requests through BitRouter — a local multi-provider proxy with " +
+    "failover, load balancing, and unified API key management.",
+  register: activate,
+};
+
+export default plugin;

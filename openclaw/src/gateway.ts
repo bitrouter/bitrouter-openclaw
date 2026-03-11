@@ -5,6 +5,7 @@
 
 import type {
   BitrouterState,
+  GatewayRequestHandlerOptions,
   OpenClawPluginApi,
 } from "./types.js";
 import { refreshMetrics } from "./metrics.js";
@@ -17,16 +18,16 @@ export function registerGatewayMethods(
   state: BitrouterState
 ): void {
   // ── bitrouter.metrics ─────────────────────────────────────────────
-  api.registerGatewayMethod("bitrouter.metrics", async () => {
+  api.registerGatewayMethod("bitrouter.metrics", async (opts: GatewayRequestHandlerOptions) => {
     // Return cached metrics, or fetch fresh if stale/missing.
     if (!state.metrics) {
       await refreshMetrics(state, api);
     }
-    return state.metrics ?? { error: "No metrics available" };
+    opts.respond(true, state.metrics ?? { error: "No metrics available" });
   });
 
   // ── bitrouter.routing.explain ─────────────────────────────────────
-  api.registerGatewayMethod("bitrouter.routing.explain", async () => {
+  api.registerGatewayMethod("bitrouter.routing.explain", async (opts: GatewayRequestHandlerOptions) => {
     const staticRoutes = state.knownRoutes.map((r) => ({
       model: r.model,
       provider: r.provider,
@@ -45,7 +46,7 @@ export function registerGatewayMethods(
       createdAt: dr.createdAt,
     }));
 
-    return {
+    opts.respond(true, {
       healthy: state.healthy,
       baseUrl: state.baseUrl,
       resolutionOrder: [
@@ -56,6 +57,6 @@ export function registerGatewayMethods(
       staticRoutes,
       dynamicRoutes,
       metricsAvailable: state.metrics !== null,
-    };
+    });
   });
 }

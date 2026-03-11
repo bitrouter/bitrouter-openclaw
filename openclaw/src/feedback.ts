@@ -7,6 +7,7 @@
  */
 
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
 
 import type { FeedbackSignal, OpenClawPluginApi } from "./types.js";
@@ -14,31 +15,49 @@ import type { FeedbackSignal, OpenClawPluginApi } from "./types.js";
 /**
  * Register the POST /bitrouter/feedback HTTP route.
  */
-export function registerFeedbackRoute(api: OpenClawPluginApi): void {
-  const feedbackPath = path.join(api.getDataDir(), "bitrouter", "feedback.jsonl");
-
+export function registerFeedbackRoute(
+  api: OpenClawPluginApi,
+  stateDirRef: { value: string }
+): void {
   api.registerHttpRoute({
-    method: "POST",
     path: "/bitrouter/feedback",
-    handler: async (req) => {
+    auth: "gateway",
+    handler: async (
+      req: http.IncomingMessage,
+      res: http.ServerResponse
+    ): Promise<boolean | void> => {
+      if (req.method !== "POST") return false;
+
+      const feedbackPath = path.join(stateDirRef.value, "bitrouter", "feedback.jsonl");
+
+      // Read body from stream.
+      const rawBody = await new Promise<string>((resolve) => {
+        let data = "";
+        req.on("data", (chunk: Buffer | string) => (data += chunk));
+        req.on("end", () => resolve(data));
+      });
+
       let body: unknown;
       try {
-        body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+        body = rawBody ? JSON.parse(rawBody) : undefined;
       } catch {
-        return { status: 400, body: { error: "Invalid JSON body" } };
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid JSON body" }));
+        return true;
       }
 
       const signal = body as Record<string, unknown>;
 
       // Validate required fields.
-      if (!signal.route || typeof signal.route !== "string") {
-        return { status: 400, body: { error: 'Missing or invalid "route" field' } };
+      if (!signal?.route || typeof signal.route !== "string") {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: 'Missing or invalid "route" field' }));
+        return true;
       }
       if (!signal.outcome || (signal.outcome !== "success" && signal.outcome !== "failure")) {
-        return {
-          status: 400,
-          body: { error: '"outcome" must be "success" or "failure"' },
-        };
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: '"outcome" must be "success" or "failure"' }));
+        return true;
       }
 
       const entry: FeedbackSignal = {
@@ -54,7 +73,9 @@ export function registerFeedbackRoute(api: OpenClawPluginApi): void {
       // Append to JSONL.
       fs.appendFileSync(feedbackPath, JSON.stringify(entry) + "\n", "utf-8");
 
-      return { status: 200, body: { ok: true } };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return true;
     },
   });
 }

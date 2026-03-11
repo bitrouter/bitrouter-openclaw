@@ -3,10 +3,15 @@ import type {
   BitrouterPluginConfig,
   BitrouterState,
   OpenClawPluginApi,
-  ToolResult,
 } from "../src/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
+
+/** Result shape returned by factory-wrapped tool execute. */
+interface FactoryToolResult {
+  content: Array<{ type: string; text: string }>;
+  details?: unknown;
+}
 
 function createMockState(
   overrides?: Partial<BitrouterState>
@@ -24,70 +29,60 @@ function createMockState(
   };
 }
 
-function createMockApi(): OpenClawPluginApi & {
-  _tools: Map<
-    string,
-    {
-      execute: (
-        id: string,
-        params: Record<string, unknown>
-      ) => Promise<ToolResult>;
-    }
-  >;
-} {
+function createMockApi() {
   const tools = new Map<
     string,
     {
+      name: string;
       execute: (
         id: string,
         params: Record<string, unknown>
-      ) => Promise<ToolResult>;
+      ) => Promise<FactoryToolResult>;
     }
   >();
 
-  return {
+  const api = {
     _tools: tools,
     registerService: vi.fn(),
     registerProvider: vi.fn(),
     registerTool: vi.fn(
-      (
-        def: {
-          name: string;
-          execute: (
-            id: string,
-            params: Record<string, unknown>
-          ) => Promise<ToolResult>;
-        },
-        _opts?: { optional?: boolean }
-      ) => {
-        tools.set(def.name, def);
+      (factory: Function, _opts?: { optional?: boolean }) => {
+        const tool = factory();
+        tools.set(tool.name, tool);
       }
     ),
     on: vi.fn(),
     registerHttpRoute: vi.fn(),
     registerGatewayMethod: vi.fn(),
-    getConfig: vi.fn(() => ({})),
-    getDataDir: vi.fn(() => "/tmp"),
-    log: {
+    registerCli: vi.fn(),
+    pluginConfig: {},
+    config: {},
+    logger: {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
     },
   };
+
+  return api as typeof api & { _tools: typeof tools };
 }
 
 async function callTool(
   api: ReturnType<typeof createMockApi>,
   name: string,
   params: Record<string, unknown> = {}
-): Promise<ToolResult> {
+): Promise<FactoryToolResult> {
   const tool = api._tools.get(name);
   if (!tool) throw new Error(`Tool "${name}" not registered`);
   return tool.execute("test-id", params);
 }
 
-function parseJsonResult(result: ToolResult): unknown {
+function parseJsonResult(result: FactoryToolResult): unknown {
   return JSON.parse(result.content[0].text);
+}
+
+function isErrorResult(result: FactoryToolResult): boolean {
+  return result.content[0]?.text?.startsWith("Error:") ?? false;
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -100,6 +95,8 @@ beforeEach(async () => {
   const mod = await import("../src/tools.js");
   registerAgentTools = mod.registerAgentTools;
 });
+
+const stateDirRef = { value: "/tmp" };
 
 describe("bitrouter_status", () => {
   it("returns health and route counts from state", async () => {
@@ -117,7 +114,7 @@ describe("bitrouter_status", () => {
       rrCounter: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_status");
     const data = parseJsonResult(result) as Record<string, unknown>;
@@ -148,7 +145,7 @@ describe("bitrouter_list_routes", () => {
       rrCounter: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_list_routes");
     const data = parseJsonResult(result) as Array<Record<string, unknown>>;
@@ -167,7 +164,7 @@ describe("bitrouter_create_route", () => {
   it("stores a DynamicRoute in state", async () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_create_route", {
       model: "my-model",
@@ -189,7 +186,7 @@ describe("bitrouter_create_route", () => {
   it("defaults strategy to priority", async () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     await callTool(api, "bitrouter_create_route", {
       model: "test",
@@ -202,7 +199,7 @@ describe("bitrouter_create_route", () => {
   it("upserts — overwrites existing route with same model name", async () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     await callTool(api, "bitrouter_create_route", {
       model: "test",
@@ -230,7 +227,7 @@ describe("bitrouter_create_route", () => {
         { model: "fast", provider: "openai", protocol: "openai" },
       ],
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_create_route", {
       model: "fast",
@@ -245,7 +242,7 @@ describe("bitrouter_create_route", () => {
   it("warns when provider is unknown", async () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_create_route", {
       model: "test",
@@ -269,7 +266,7 @@ describe("bitrouter_delete_route", () => {
       rrCounter: 0,
       createdAt: "2026-01-01T00:00:00.000Z",
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_delete_route", {
       model: "test",
@@ -284,13 +281,13 @@ describe("bitrouter_delete_route", () => {
   it("errors when model not found", async () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_delete_route", {
       model: "nonexistent",
     });
 
-    expect(result.isError).toBe(true);
+    expect(isErrorResult(result)).toBe(true);
     expect(result.content[0].text).toContain("No dynamic route found");
   });
 
@@ -301,13 +298,13 @@ describe("bitrouter_delete_route", () => {
         { model: "fast", provider: "openai", protocol: "openai" },
       ],
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_delete_route", {
       model: "fast",
     });
 
-    expect(result.isError).toBe(true);
+    expect(isErrorResult(result)).toBe(true);
     expect(result.content[0].text).toContain("Cannot delete static route");
   });
 });
@@ -316,7 +313,7 @@ describe("bitrouter_create_token", () => {
   it("returns an error result when the CLI command fails", async () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_create_token", {
       scope: "api",
@@ -324,14 +321,14 @@ describe("bitrouter_create_token", () => {
     });
 
     // Either binary not found or CLI fails — either way it's an error
-    expect(result.isError).toBe(true);
+    expect(isErrorResult(result)).toBe(true);
     expect(result.content[0].text.length).toBeGreaterThan(0);
   });
 
   it("is registered as a tool", () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     expect(api._tools.has("bitrouter_create_token")).toBe(true);
   });
@@ -355,7 +352,7 @@ describe("bitrouter_status with metrics", () => {
         },
       },
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_status");
     const data = parseJsonResult(result) as Record<string, unknown>;
@@ -368,7 +365,7 @@ describe("bitrouter_status with metrics", () => {
   it("shows metricsAvailable=false when no metrics", async () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_status");
     const data = parseJsonResult(result) as Record<string, unknown>;
@@ -404,7 +401,7 @@ describe("bitrouter_route_metrics", () => {
         },
       },
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_route_metrics", { model: "fast" });
     const data = parseJsonResult(result) as Record<string, unknown>;
@@ -416,10 +413,10 @@ describe("bitrouter_route_metrics", () => {
   it("errors when metrics unavailable", async () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_route_metrics", { model: "fast" });
-    expect(result.isError).toBe(true);
+    expect(isErrorResult(result)).toBe(true);
     expect(result.content[0].text).toContain("Metrics not available");
   });
 
@@ -428,10 +425,10 @@ describe("bitrouter_route_metrics", () => {
     const state = createMockState({
       metrics: { routes: {} },
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_route_metrics", { model: "unknown" });
-    expect(result.isError).toBe(true);
+    expect(isErrorResult(result)).toBe(true);
     expect(result.content[0].text).toContain("No metrics found");
   });
 });
@@ -445,7 +442,7 @@ describe("bitrouter_route_task", () => {
         { model: "gpt-4o-mini", provider: "openai", protocol: "openai" as const },
       ],
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_route_task", {
       taskType: "coding",
@@ -465,7 +462,7 @@ describe("bitrouter_route_task", () => {
         { model: "gpt-4o-mini", provider: "openai", protocol: "openai" as const },
       ],
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_route_task", {
       taskType: "summarization",
@@ -480,12 +477,12 @@ describe("bitrouter_route_task", () => {
   it("errors when no routes available", async () => {
     const api = createMockApi();
     const state = createMockState();
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_route_task", {
       taskType: "reasoning",
     });
-    expect(result.isError).toBe(true);
+    expect(isErrorResult(result)).toBe(true);
     expect(result.content[0].text).toContain("No routes available");
   });
 });
@@ -511,7 +508,7 @@ describe("bitrouter_list_routes with metrics", () => {
         },
       },
     });
-    registerAgentTools(api, {}, state);
+    registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
 
     const result = await callTool(api, "bitrouter_list_routes");
     const data = parseJsonResult(result) as Array<Record<string, unknown>>;

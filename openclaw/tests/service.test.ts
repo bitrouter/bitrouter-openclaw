@@ -22,6 +22,9 @@ vi.mock("../src/binary.js", () => ({
 vi.mock("../src/config.js", () => ({
   writeConfigToDir: vi.fn(() => "/tmp/bitrouter-test"),
   resolveHomeDir: vi.fn(() => "/tmp/bitrouter-test"),
+  PROVIDER_API_BASES: {},
+  toEnvVarKey: vi.fn((s: string) => `${s.toUpperCase()}_API_KEY`),
+  parseEnvFile: vi.fn(() => new Map()),
 }));
 
 vi.mock("../src/health.js", () => ({
@@ -34,12 +37,17 @@ vi.mock("../src/routing.js", () => ({
   refreshRoutes: vi.fn(() => Promise.resolve()),
 }));
 
+vi.mock("../src/metrics.js", () => ({
+  refreshMetrics: vi.fn(() => Promise.resolve()),
+}));
+
 import { spawn } from "node:child_process";
 import { resolveBinaryPath } from "../src/binary.js";
 import { registerBitrouterService } from "../src/service.js";
 import type {
   BitrouterState,
   OpenClawPluginApi,
+  OpenClawPluginServiceContext,
 } from "../src/types.js";
 import { EventEmitter } from "node:events";
 
@@ -58,22 +66,23 @@ function createMockState(): BitrouterState {
   };
 }
 
-function createMockApi(): OpenClawPluginApi {
+function createMockApi() {
   return {
     registerService: vi.fn(),
     registerProvider: vi.fn(),
     registerTool: vi.fn(),
     registerHttpRoute: vi.fn(),
     registerGatewayMethod: vi.fn(),
+    registerCli: vi.fn(),
     on: vi.fn(),
-    getConfig: vi.fn(() => ({})),
-    getDataDir: vi.fn(() => "/tmp"),
-    log: {
+    pluginConfig: {},
+    config: {},
+    logger: {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
     },
-  };
+  } as unknown as OpenClawPluginApi;
 }
 
 /** Create a mock ChildProcess with EventEmitter behavior. */
@@ -86,6 +95,11 @@ function createMockChild() {
   return child;
 }
 
+/** Mock service context matching OpenClawPluginServiceContext. */
+const mockCtx: OpenClawPluginServiceContext = {
+  stateDir: "/tmp/bitrouter-service-test",
+};
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("registerBitrouterService", () => {
@@ -97,7 +111,8 @@ describe("registerBitrouterService", () => {
   it("registers a service with id 'bitrouter'", () => {
     const api = createMockApi();
     const state = createMockState();
-    registerBitrouterService(api, {}, state);
+    const stateDirRef = { value: "/tmp" };
+    registerBitrouterService(api, {}, state, stateDirRef);
 
     expect(api.registerService).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -114,13 +129,14 @@ describe("registerBitrouterService", () => {
 
     const api = createMockApi();
     const state = createMockState();
-    registerBitrouterService(api, {}, state);
+    const stateDirRef = { value: "/tmp" };
+    registerBitrouterService(api, {}, state, stateDirRef);
 
-    // Extract and call the start function.
+    // Extract and call the start function with service context.
     const serviceOpts = vi.mocked(api.registerService).mock.calls[0][0];
-    await serviceOpts.start();
+    await serviceOpts.start(mockCtx);
 
-    expect(resolveBinaryPath).toHaveBeenCalledWith("/tmp");
+    expect(resolveBinaryPath).toHaveBeenCalledWith(mockCtx.stateDir);
     expect(spawn).toHaveBeenCalledWith(
       "/usr/local/bin/bitrouter",
       ["--home-dir", expect.any(String), "--db", "", "serve"],
@@ -140,7 +156,8 @@ describe("registerBitrouterService", () => {
     state.process = mockChild;
     state.healthy = true;
 
-    registerBitrouterService(api, {}, state);
+    const stateDirRef = { value: "/tmp" };
+    registerBitrouterService(api, {}, state, stateDirRef);
 
     const serviceOpts = vi.mocked(api.registerService).mock.calls[0][0];
 
@@ -150,7 +167,7 @@ describe("registerBitrouterService", () => {
       return true;
     });
 
-    await serviceOpts.stop();
+    await serviceOpts.stop(mockCtx);
 
     expect(mockChild.kill).toHaveBeenCalledWith("SIGTERM");
     expect(state.process).toBeNull();
@@ -164,9 +181,10 @@ describe("registerBitrouterService", () => {
 
     const api = createMockApi();
     const state = createMockState();
-    registerBitrouterService(api, {}, state);
+    const stateDirRef = { value: "/tmp" };
+    registerBitrouterService(api, {}, state, stateDirRef);
 
     const serviceOpts = vi.mocked(api.registerService).mock.calls[0][0];
-    await expect(serviceOpts.start()).rejects.toThrow("BitRouter binary not found.");
+    await expect(serviceOpts.start(mockCtx)).rejects.toThrow("BitRouter binary not found.");
   });
 });

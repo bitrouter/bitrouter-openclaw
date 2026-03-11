@@ -62,11 +62,11 @@ export function startHealthCheck(
 
     // Log state transitions.
     if (isHealthy && !wasHealthy) {
-      api.log.info("BitRouter is healthy");
+      api.logger.info("BitRouter is healthy");
       // Refresh routes immediately on recovery.
       await refreshRoutes(state, api);
     } else if (!isHealthy && wasHealthy) {
-      api.log.warn("BitRouter health check failed");
+      api.logger.warn("BitRouter health check failed");
     }
 
     state.healthy = isHealthy;

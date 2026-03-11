@@ -24,8 +24,10 @@ import type {
   BitrouterState,
   DynamicRoute,
   EndpointMetrics,
-  ModelResolveEvent,
   OpenClawPluginApi,
+  PluginHookBeforeModelResolveEvent,
+  PluginHookBeforeModelResolveResult,
+  PluginHookAgentContext,
   RouteInfo,
 } from "./types.js";
 import { DEFAULTS } from "./types.js";
@@ -52,7 +54,7 @@ export async function refreshRoutes(
     clearTimeout(timeout);
 
     if (!res.ok) {
-      api.log.warn(
+      api.logger.warn(
         `Failed to fetch routes: ${res.status} ${res.statusText}`
       );
       return;
@@ -60,12 +62,12 @@ export async function refreshRoutes(
 
     const body = (await res.json()) as { routes: RouteInfo[] };
     state.knownRoutes = body.routes;
-    api.log.info(
+    api.logger.info(
       `Loaded ${state.knownRoutes.length} route(s) from BitRouter`
     );
   } catch (err) {
     // Don't clear existing routes — they may still be valid.
-    api.log.warn(`Route refresh failed: ${err}`);
+    api.logger.warn(`Route refresh failed: ${err}`);
   }
 }
 
@@ -189,6 +191,47 @@ export function resolveDynamicRoute(
   return `${endpoint.provider}:${endpoint.modelId}`;
 }
 
+// ── Model name resolution ────────────────────────────────────────────
+
+/**
+ * Resolve the model name for a given agent from the OpenClaw config.
+ *
+ * The before_model_resolve hook receives `{ prompt }` and `{ agentId }`,
+ * not the model name directly. We look up the agent's configured primary
+ * model in `api.config.agents` and strip the provider prefix.
+ */
+function resolveModelName(api: OpenClawPluginApi, agentId: string): string {
+  const agentList = (api.config as {
+    agents?: {
+      list?: Array<{
+        id: string;
+        model?: { primary?: string } | string;
+      }>;
+      defaults?: { model?: { primary?: string } | string };
+    };
+  }).agents;
+
+  const agentEntry = agentList?.list?.find((a) => a.id === agentId);
+  const agentModel = agentEntry?.model;
+  const defaultModel = agentList?.defaults?.model;
+
+  const extract = (m: unknown): string | undefined => {
+    if (typeof m === "string") return m;
+    if (m && typeof m === "object" && "primary" in m) {
+      return (m as { primary?: string }).primary;
+    }
+    return undefined;
+  };
+
+  const fullModel =
+    extract(agentModel) ?? extract(defaultModel) ?? "default";
+
+  // Strip provider prefix (e.g. "openrouter/auto" → "auto")
+  return fullModel.includes("/")
+    ? fullModel.split("/").slice(1).join("/")
+    : fullModel;
+}
+
 // ── Hook registration ────────────────────────────────────────────────
 
 /**
@@ -215,35 +258,39 @@ export function registerModelInterceptor(
   // - Default: false (transparent URL-redirect is enough).
   const interceptAll = config.interceptAllModels ?? DEFAULTS.interceptAllModels;
 
-  api.on("before_model_resolve", (event: ModelResolveEvent) => {
-    // Don't intercept if BitRouter isn't healthy.
-    if (!state.healthy) return;
+  api.on(
+    "before_model_resolve",
+    (
+      _event: PluginHookBeforeModelResolveEvent,
+      ctx: PluginHookAgentContext
+    ): PluginHookBeforeModelResolveResult | void => {
+      // Don't intercept if BitRouter isn't healthy.
+      if (!state.healthy) return;
 
-    const modelName = event.model;
+      const modelName = resolveModelName(api, ctx.agentId ?? "main");
 
-    // 1. Dynamic routes (plugin-layer, agent-created) take priority.
-    const directRoute = resolveDynamicRoute(state, modelName, config);
-    if (directRoute) {
-      event.override({ provider: "bitrouter", model: directRoute });
-      return;
+      // 1. Dynamic routes (plugin-layer, agent-created) take priority.
+      const directRoute = resolveDynamicRoute(state, modelName, config);
+      if (directRoute) {
+        return { providerOverride: "bitrouter", modelOverride: directRoute };
+      }
+
+      // 2. Existing static route logic.
+      if (interceptAll) {
+        // Route everything through BitRouter (it can handle any model
+        // via direct routing like "openai:gpt-4o").
+        return { providerOverride: "bitrouter", modelOverride: modelName };
+      }
+
+      // Selective mode: only intercept models in BitRouter's routing table.
+      const isKnownRoute = state.knownRoutes.some(
+        (r) => r.model === modelName
+      );
+
+      if (isKnownRoute) {
+        return { providerOverride: "bitrouter", modelOverride: modelName };
+      }
+      // Unknown models fall through to OpenClaw's native resolution.
     }
-
-    // 2. Existing static route logic.
-    if (interceptAll) {
-      // Route everything through BitRouter (it can handle any model
-      // via direct routing like "openai:gpt-4o").
-      event.override({ provider: "bitrouter", model: modelName });
-      return;
-    }
-
-    // Selective mode: only intercept models in BitRouter's routing table.
-    const isKnownRoute = state.knownRoutes.some(
-      (r) => r.model === modelName
-    );
-
-    if (isKnownRoute) {
-      event.override({ provider: "bitrouter", model: modelName });
-    }
-    // Unknown models fall through to OpenClaw's native resolution.
-  });
+  );
 }

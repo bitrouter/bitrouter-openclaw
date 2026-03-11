@@ -29,15 +29,28 @@ import type {
   ProviderAuthResult,
   SetupMode,
 } from "./types.js";
+import { DEFAULTS } from "./types.js";
+import { PROVIDER_API_BASES, toEnvVarKey, parseEnvFile, serializeEnvFile } from "./config.js";
 
 // ── Well-known upstream providers ────────────────────────────────────
 
-const UPSTREAM_PROVIDERS = [
+type UpstreamProviderId = "openrouter" | "openai" | "anthropic" | "other";
+
+interface UpstreamProviderMeta {
+  value: UpstreamProviderId;
+  label: string;
+  hint: string;
+  apiBase?: string;
+  keyPlaceholder: string;
+  docsUrl?: string;
+}
+
+const UPSTREAM_PROVIDERS: UpstreamProviderMeta[] = [
   {
     value: "openrouter",
     label: "OpenRouter",
     hint: "Access 100+ models via a single key — recommended",
-    apiBase: "https://openrouter.ai/api/v1",
+    apiBase: PROVIDER_API_BASES.openrouter,
     keyPlaceholder: "sk-or-...",
     docsUrl: "https://openrouter.ai/keys",
   },
@@ -45,7 +58,7 @@ const UPSTREAM_PROVIDERS = [
     value: "openai",
     label: "OpenAI",
     hint: "GPT-4o, o1, and other OpenAI models",
-    apiBase: "https://api.openai.com/v1",
+    apiBase: PROVIDER_API_BASES.openai,
     keyPlaceholder: "sk-...",
     docsUrl: "https://platform.openai.com/api-keys",
   },
@@ -53,7 +66,7 @@ const UPSTREAM_PROVIDERS = [
     value: "anthropic",
     label: "Anthropic",
     hint: "Claude 3.5, Claude 3 Opus, and others",
-    apiBase: "https://api.anthropic.com",
+    apiBase: PROVIDER_API_BASES.anthropic,
     keyPlaceholder: "sk-ant-...",
     docsUrl: "https://console.anthropic.com/settings/keys",
   },
@@ -61,13 +74,9 @@ const UPSTREAM_PROVIDERS = [
     value: "other",
     label: "Other / self-hosted",
     hint: "Any OpenAI-compatible API (Ollama, LM Studio, etc.)",
-    apiBase: undefined,
     keyPlaceholder: "",
-    docsUrl: undefined,
   },
-] as const;
-
-type UpstreamProviderId = (typeof UPSTREAM_PROVIDERS)[number]["value"];
+];
 
 // ── BYOK wizard ──────────────────────────────────────────────────────
 
@@ -126,7 +135,7 @@ export async function byokWizard(
       },
     });
   } else {
-    apiBase = providerMeta.apiBase as string;
+    apiBase = providerMeta.apiBase;
   }
 
   const keyHint =
@@ -182,7 +191,7 @@ export async function byokWizard(
   //    mechanism: OpenClaw keeps using the provider it knows (e.g. "openrouter")
   //    but sends all requests to BitRouter's local endpoint instead.
   //    BitRouter proxies them upstream using the stored API key.
-  const bitrouterApiBase = `http://127.0.0.1:8787/v1`;
+  const bitrouterApiBase = `http://${DEFAULTS.host}:${DEFAULTS.port}/v1`;
 
   const configPatch = {
     plugins: {
@@ -208,7 +217,7 @@ export async function byokWizard(
     // models: [] — required field in ModelProviderConfig; empty is fine
     // since the built-in model list is preserved via merge mode.
     models: {
-      mode: "merge",
+      mode: "merge" as const,
       providers: {
         [providerChoice]: {
           baseUrl: bitrouterApiBase,
@@ -243,33 +252,18 @@ export async function byokWizard(
 // ── Helpers ──────────────────────────────────────────────────────────
 
 /**
- * Resolve the BitRouter home directory for this plugin.
+ * Resolve the BitRouter home directory from auth context.
  *
- * When the plugin is loaded via plugins.load.paths (symlink dev install),
- * OpenClaw sets ctx.stateDir to ~/.openclaw/<plugin-id>. We can derive this
- * from the OpenClaw config directory, which is always ~/.openclaw.
- *
- * The pattern is: ~/.openclaw/bitrouter — this matches what resolveHomeDir()
- * in config.ts produces (api.getDataDir() + "/bitrouter" where getDataDir()
- * returns ctx.stateDir = ~/.openclaw/bitrouter, so final = ~/.openclaw/bitrouter).
- *
- * Note: for npm-installed plugins the stateDir differs. This heuristic works
- * for the common case; the service will still read from wherever it wrote config.
+ * Uses ctx.stateDir when available (matches config.ts resolveHomeDir).
+ * Falls back to ~/.openclaw/bitrouter for the common dev-install case.
  */
-function resolveSetupHomeDir(_ctx: ProviderAuthContext): string {
-  const home = os.homedir();
-  // Match the path that service.ts + config.ts resolveHomeDir() produces
-  // when called with the real ctx.stateDir from OpenClaw's plugin service runner.
-  // ctx.stateDir for load.paths = ~/.openclaw/bitrouter
-  // resolveHomeDir = ctx.stateDir + "/bitrouter" = ~/.openclaw/bitrouter/bitrouter
-  // BUT logs show "Config written to ~/.openclaw/bitrouter" so stateDir itself
-  // is the parent. The actual home = stateDir (not stateDir+/bitrouter).
-  // Cross-reference: the log says stateDir appears to be ~/.openclaw/bitrouter
-  // so resolveHomeDir returns ~/.openclaw/bitrouter/bitrouter... but log says
-  // "Config written to ~/.openclaw/bitrouter". 
-  // Conclusion: getDataDir() returns ~/.openclaw/bitrouter already (stateDir IS the home).
-  // So we target ~/.openclaw/bitrouter directly.
-  return path.join(home, ".openclaw", "bitrouter");
+function resolveSetupHomeDir(ctx: ProviderAuthContext): string {
+  // stateDir is set by OpenClaw's service runner and matches what
+  // config.ts resolveHomeDir(api) produces via api.getDataDir().
+  if (ctx.workspaceDir) {
+    return path.join(ctx.workspaceDir, "bitrouter");
+  }
+  return path.join(os.homedir(), ".openclaw", "bitrouter");
 }
 
 /**
@@ -284,30 +278,18 @@ function writeKeyToEnv(
   try {
     fs.mkdirSync(homeDir, { recursive: true });
     const envPath = path.join(homeDir, ".env");
-    const envKey = `${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
+    const envKey = toEnvVarKey(provider);
 
     // Read existing .env entries (if any) and merge.
-    const entries = new Map<string, string>();
-    if (fs.existsSync(envPath)) {
-      for (const line of fs.readFileSync(envPath, "utf-8").split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const eqIdx = trimmed.indexOf("=");
-        if (eqIdx > 0) {
-          entries.set(trimmed.slice(0, eqIdx).trim(), trimmed.slice(eqIdx + 1).trim());
-        }
-      }
+    let entries = new Map<string, string>();
+    try {
+      entries = parseEnvFile(fs.readFileSync(envPath, "utf-8"));
+    } catch {
+      // File doesn't exist yet — start fresh.
     }
 
     entries.set(envKey, apiKey);
-
-    const header =
-      "# BitRouter environment variables\n" +
-      "# Written by @bitrouter/openclaw-plugin setup wizard — do not commit.\n\n";
-    const lines = Array.from(entries.entries())
-      .map(([k, v]) => `${k}=${v}`)
-      .join("\n");
-    fs.writeFileSync(envPath, header + lines + "\n", "utf-8");
+    fs.writeFileSync(envPath, serializeEnvFile(entries), "utf-8");
   } catch (err) {
     // Non-fatal — the service will fall back to env vars.
     console.warn(`[bitrouter] Warning: could not write .env file: ${err}`);

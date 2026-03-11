@@ -29,22 +29,17 @@ import { byokWizard, cloudStub } from "./setup.js";
 /**
  * Register "bitrouter" as a provider in OpenClaw.
  *
- * The provider's baseUrl points to the local BitRouter instance. When the
- * before_model_resolve hook redirects a model to provider "bitrouter",
- * OpenClaw sends the HTTP request there.
- *
  * Auth methods are always registered so the user can always run the wizard,
  * even to change their configuration after initial setup.
  */
 export function registerBitrouterProvider(
   api: OpenClawPluginApi,
   _config: BitrouterPluginConfig,
-  state: BitrouterState
+  _state: BitrouterState
 ): void {
   api.registerProvider({
     id: "bitrouter",
     label: "BitRouter",
-    baseUrl: state.baseUrl,
     auth: [
       {
         id: "byok",

@@ -22,22 +22,23 @@ function createMockState(overrides?: Partial<BitrouterState>): BitrouterState {
   };
 }
 
-function createMockApi(): OpenClawPluginApi {
+function createMockApi() {
   return {
     registerService: vi.fn(),
     registerProvider: vi.fn(),
     registerTool: vi.fn(),
     registerHttpRoute: vi.fn(),
     registerGatewayMethod: vi.fn(),
+    registerCli: vi.fn(),
     on: vi.fn(),
-    getConfig: vi.fn(() => ({})),
-    getDataDir: vi.fn(() => "/tmp"),
-    log: {
+    pluginConfig: {},
+    config: {},
+    logger: {
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
     },
-  };
+  } as unknown as OpenClawPluginApi;
 }
 
 const sampleMetrics: MetricsResponse = {
@@ -106,7 +107,7 @@ describe("refreshMetrics", () => {
     expect(result).toBeNull();
     // Existing cache preserved.
     expect(state.metrics).toEqual(sampleMetrics);
-    expect(api.log.warn).toHaveBeenCalled();
+    expect(api.logger.warn).toHaveBeenCalled();
   });
 
   it("returns null on 404 without warning (no mock)", async () => {
@@ -124,7 +125,7 @@ describe("refreshMetrics", () => {
     const result = await refreshMetrics(state, api);
 
     expect(result).toBeNull();
-    expect(api.log.warn).not.toHaveBeenCalled();
+    expect(api.logger.warn).not.toHaveBeenCalled();
   });
 
   it("generates mock metrics on 404 when mockMetrics=true", async () => {
@@ -173,7 +174,7 @@ describe("refreshMetrics", () => {
     expect(result).not.toBeNull();
     expect(result!.routes.fast).toBeDefined();
     // Should not warn when falling back to mock.
-    expect(api.log.warn).not.toHaveBeenCalled();
+    expect(api.logger.warn).not.toHaveBeenCalled();
   });
 
   it("mock metrics include dynamic routes", async () => {
@@ -225,7 +226,7 @@ describe("refreshMetrics", () => {
     const api = createMockApi();
     await refreshMetrics(state, api);
 
-    expect(api.log.warn).toHaveBeenCalledWith(
+    expect(api.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("500")
     );
   });

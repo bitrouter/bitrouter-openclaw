@@ -51,7 +51,7 @@ export async function refreshMetrics(
         return mock;
       }
       if (res.status !== 404) {
-        api.log.warn(
+        api.logger.warn(
           `Failed to fetch metrics: ${res.status} ${res.statusText}`
         );
       }
@@ -68,16 +68,12 @@ export async function refreshMetrics(
       state.metrics = mock;
       return mock;
     }
-    api.log.warn(`Metrics refresh failed: ${err}`);
+    api.logger.warn(`Metrics refresh failed: ${err}`);
     return null;
   }
 }
 
 // ── Mock metrics generator ──────────────────────────────────────────
-
-// Seeded pseudo-random for deterministic-ish but varied mock data.
-// Mutates on each call to simulate changing metrics over time.
-let mockTick = 0;
 
 /**
  * Generate synthetic metrics from state.knownRoutes + state.dynamicRoutes.
@@ -86,16 +82,15 @@ let mockTick = 0;
  * Latency and error rates are randomized within realistic ranges.
  */
 export function generateMockMetrics(state: BitrouterState): MetricsResponse {
-  mockTick++;
   const existing = state.metrics?.routes ?? {};
   const routes: Record<string, RouteMetrics> = {};
 
   // Build from static routes.
   for (const r of state.knownRoutes) {
     const prev = existing[r.model];
-    routes[r.model] = mockRouteMetrics(
+    routes[r.model] = mockRouteMetricsMulti(
       r.model,
-      `${r.provider}:${r.model}`,
+      [`${r.provider}:${r.model}`],
       prev
     );
   }
@@ -114,14 +109,6 @@ export function generateMockMetrics(state: BitrouterState): MetricsResponse {
   }
 
   return { routes };
-}
-
-function mockRouteMetrics(
-  model: string,
-  endpointKey: string,
-  prev?: RouteMetrics
-): RouteMetrics {
-  return mockRouteMetricsMulti(model, [endpointKey], prev);
 }
 
 function mockRouteMetricsMulti(

@@ -37,7 +37,7 @@ export function getModelTier(modelId: string): ModelTier {
   if (MODEL_TIERS[modelId]) return MODEL_TIERS[modelId];
 
   const lower = modelId.toLowerCase();
-  if (lower.includes("opus") || lower.includes("pro") || lower.includes("4o") && !lower.includes("mini")) return "high";
+  if ((lower.includes("opus") || lower.includes("pro") || lower.includes("4o")) && !lower.includes("mini")) return "high";
   if (lower.includes("haiku") || lower.includes("mini") || lower.includes("flash")) return "low";
   if (lower.includes("sonnet")) return "mid";
 

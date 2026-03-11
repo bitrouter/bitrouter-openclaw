@@ -22,9 +22,10 @@ import type {
   BitrouterPluginConfig,
   BitrouterState,
   OpenClawPluginApi,
+  OpenClawPluginServiceContext,
 } from "./types.js";
 import { DEFAULTS } from "./types.js";
-import { writeConfigToDir, resolveHomeDir } from "./config.js";
+import { writeConfigToDir, resolveHomeDir, PROVIDER_API_BASES, toEnvVarKey, parseEnvFile } from "./config.js";
 import { startHealthCheck, stopHealthCheck, waitForReady } from "./health.js";
 import { refreshRoutes } from "./routing.js";
 import { refreshMetrics } from "./metrics.js";
@@ -38,14 +39,18 @@ import { resolveBinaryPath } from "./binary.js";
 export function registerBitrouterService(
   api: OpenClawPluginApi,
   config: BitrouterPluginConfig,
-  state: BitrouterState
+  state: BitrouterState,
+  stateDirRef: { value: string }
 ): void {
   api.registerService({
     id: "bitrouter",
 
-    start: async () => {
+    start: async (ctx: OpenClawPluginServiceContext) => {
+      // Capture stateDir from service context — authoritative source.
+      stateDirRef.value = ctx.stateDir;
+
       // 1. Resolve home directory and write config files.
-      state.homeDir = resolveHomeDir(api);
+      state.homeDir = resolveHomeDir(ctx.stateDir);
 
       // For BYOK mode, synthesize a provider entry from the stored credential.
       // The wizard writes the API key into the auth-profiles credential store;
@@ -55,18 +60,17 @@ export function registerBitrouterService(
       // inlineSecrets: true because we run with --db "" (no-auth mode),
       // so BitRouter cannot load a .env file — keys must be in the YAML.
       writeConfigToDir(effectiveConfig, state.homeDir, { inlineSecrets: true });
-      api.log.info(`Config written to ${state.homeDir}`);
+      api.logger.info(`Config written to ${state.homeDir}`);
 
       // 2. Find the binary (downloads from GitHub releases if not cached).
       let binaryPath: string;
       try {
-        const dataDir = api.getDataDir();
-        binaryPath = await resolveBinaryPath(dataDir);
+        binaryPath = await resolveBinaryPath(ctx.stateDir);
       } catch (err) {
-        api.log.error(`${err}`);
+        api.logger.error(`${err}`);
         throw err;
       }
-      api.log.info(`Using binary: ${binaryPath}`);
+      api.logger.info(`Using binary: ${binaryPath}`);
 
       // 3. Spawn the process.
       //
@@ -96,12 +100,12 @@ export function registerBitrouterService(
       // Pipe stdout/stderr to the plugin logger.
       child.stdout?.on("data", (data: Buffer) => {
         const line = data.toString().trim();
-        if (line) api.log.info(`[bitrouter] ${line}`);
+        if (line) api.logger.info(`[bitrouter] ${line}`);
       });
 
       child.stderr?.on("data", (data: Buffer) => {
         const line = data.toString().trim();
-        if (line) api.log.warn(`[bitrouter] ${line}`);
+        if (line) api.logger.warn(`[bitrouter] ${line}`);
       });
 
       // Handle unexpected exits.
@@ -111,7 +115,7 @@ export function registerBitrouterService(
         stopHealthCheck(state);
 
         if (code !== null && code !== 0) {
-          api.log.error(
+          api.logger.error(
             `BitRouter exited with code ${code}` +
               (signal ? ` (signal: ${signal})` : "")
           );
@@ -128,13 +132,13 @@ export function registerBitrouterService(
               `Check logs in ${state.homeDir}/logs/`
           );
         }
-        api.log.warn(
+        api.logger.warn(
           "BitRouter did not become healthy within timeout — " +
             "continuing with health checks"
         );
       } else {
         state.healthy = true;
-        api.log.info("BitRouter is ready");
+        api.logger.info("BitRouter is ready");
 
         // Load the initial routing table and metrics.
         await refreshRoutes(state, api);
@@ -145,7 +149,7 @@ export function registerBitrouterService(
       startHealthCheck(api, config, state);
     },
 
-    stop: async () => {
+    stop: async (_ctx: OpenClawPluginServiceContext) => {
       // Stop health checks first.
       stopHealthCheck(state);
 
@@ -160,14 +164,14 @@ export function registerBitrouterService(
 
       if (!exited) {
         // Escalate to SIGKILL.
-        api.log.warn("BitRouter did not exit gracefully — sending SIGKILL");
+        api.logger.warn("BitRouter did not exit gracefully — sending SIGKILL");
         child.kill("SIGKILL");
         await waitForExit(child, 3_000);
       }
 
       state.process = null;
       state.healthy = false;
-      api.log.info("BitRouter stopped");
+      api.logger.info("BitRouter stopped");
     },
   });
 }
@@ -197,23 +201,12 @@ function buildEffectiveConfig(
   const envPath = path.join(homeDir, ".env");
   let apiKey: string | undefined;
 
-  if (fs.existsSync(envPath)) {
-    const content = fs.readFileSync(envPath, "utf-8");
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eqIdx = trimmed.indexOf("=");
-      if (eqIdx > 0) {
-        const key = trimmed.slice(0, eqIdx).trim();
-        const value = trimmed.slice(eqIdx + 1).trim();
-        // Match UPSTREAMNAME_API_KEY pattern
-        const expectedKey = `${upstreamProvider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`;
-        if (key === expectedKey && value) {
-          apiKey = value;
-          break;
-        }
-      }
-    }
+  try {
+    const entries = parseEnvFile(fs.readFileSync(envPath, "utf-8"));
+    const expectedKey = toEnvVarKey(upstreamProvider);
+    apiKey = entries.get(expectedKey) || undefined;
+  } catch {
+    // .env file doesn't exist — fall through to env-var detection.
   }
 
   // Default model routes: map well-known virtual model names to the upstream
@@ -262,12 +255,11 @@ function buildEffectiveConfig(
 function resolveProviderApiBase(
   provider: string
 ): { apiBase: string } | Record<string, never> {
-  const bases: Record<string, string> = {
-    openrouter: "https://openrouter.ai/api/v1",
-    anthropic: "https://api.anthropic.com/v1",
-    // openai uses the default baked into BitRouter — no override needed
-  };
-  return provider in bases ? { apiBase: bases[provider] } : {};
+  // OpenAI uses the default baked into BitRouter — no override needed.
+  if (provider === "openai") return {};
+  return provider in PROVIDER_API_BASES
+    ? { apiBase: PROVIDER_API_BASES[provider] }
+    : {};
 }
 
 /**
