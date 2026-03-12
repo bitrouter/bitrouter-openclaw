@@ -191,6 +191,8 @@ export interface BitrouterState {
   dynamicRoutes: Map<string, DynamicRoute>;
   /** Cached metrics from GET /v1/metrics (null if unavailable). */
   metrics: MetricsResponse | null;
+  /** JWT token for authenticating with the local BitRouter instance. */
+  authToken: string | null;
   /** Providers detected via env var sniffing in auto mode. */
   autoDetectedProviders?: import("./auto-detect.js").DetectedProvider[];
 }

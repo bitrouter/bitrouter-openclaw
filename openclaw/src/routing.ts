@@ -50,6 +50,9 @@ export async function refreshRoutes(
 
     const res = await fetch(`${state.baseUrl}/v1/routes`, {
       signal: controller.signal,
+      headers: state.authToken
+        ? { Authorization: `Bearer ${state.authToken}` }
+        : undefined,
     });
     clearTimeout(timeout);
 

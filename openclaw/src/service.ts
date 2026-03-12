@@ -26,6 +26,7 @@ import type {
 } from "./types.js";
 import { DEFAULTS } from "./types.js";
 import { writeConfigToDir, resolveHomeDir, PROVIDER_API_BASES, toEnvVarKey, parseEnvFile } from "./config.js";
+import { ensureAuth } from "./auth.js";
 import { startHealthCheck, stopHealthCheck, waitForReady } from "./health.js";
 import { refreshRoutes } from "./routing.js";
 import { refreshMetrics } from "./metrics.js";
@@ -57,10 +58,17 @@ export function registerBitrouterService(
       // auto-detected env vars (auto mode).
       const effectiveConfig = buildEffectiveConfig(config, state.homeDir, state.autoDetectedProviders);
 
-      // inlineSecrets: true because we run with --db "" (no-auth mode),
-      // so BitRouter cannot load a .env file — keys must be in the YAML.
-      writeConfigToDir(effectiveConfig, state.homeDir, { inlineSecrets: true });
+      writeConfigToDir(effectiveConfig, state.homeDir);
       api.logger.info(`Config written to ${state.homeDir}`);
+
+      // Generate/load Ed25519 keypair and mint a JWT for authenticating
+      // with the local BitRouter instance.
+      try {
+        state.authToken = ensureAuth(state.homeDir);
+        api.logger.info("Auth keypair ready");
+      } catch (err) {
+        api.logger.warn(`Failed to generate auth token: ${err}`);
+      }
 
       // 2. Find the binary (downloads from GitHub releases if not cached).
       let binaryPath: string;
@@ -79,16 +87,9 @@ export function registerBitrouterService(
       //
       // The --home-dir flag ensures BitRouter reads our generated config
       // rather than any user-level ~/.bitrouter config.
-      //
-      // Option B (local dev): pass --db "" to force BitRouter into
-      // auth-disabled mode. When the DB connection string is empty/invalid,
-      // BitRouter skips JWT auth entirely and accepts any bearer token.
-      // This is a side-effect of a failed DB init, not a stable API —
-      // tracked for replacement with Option A (plugin-generated JWT) once
-      // BitRouter exposes a proper no-auth flag or token-injection path.
       const child = spawn(
         binaryPath,
-        ["--home-dir", state.homeDir, "--db", "", "serve"],
+        ["--home-dir", state.homeDir, "serve"],
         {
           stdio: ["ignore", "pipe", "pipe"],
           detached: false,

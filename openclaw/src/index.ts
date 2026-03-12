@@ -70,6 +70,7 @@ export function activate(api: OpenClawPluginApi): void {
     homeDir: resolveHomeDir(stateDirRef.value),
     dynamicRoutes: new Map(),
     metrics: null,
+    authToken: null,
   };
 
   // ── Always register the provider so the auth wizard is reachable ──

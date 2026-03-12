@@ -40,6 +40,9 @@ export async function refreshMetrics(
 
     const res = await fetch(`${state.baseUrl}/v1/metrics`, {
       signal: controller.signal,
+      headers: state.authToken
+        ? { Authorization: `Bearer ${state.authToken}` }
+        : undefined,
     });
     clearTimeout(timeout);
 

@@ -31,6 +31,9 @@ export async function checkHealth(state: BitrouterState): Promise<boolean> {
 
     const res = await fetch(`${state.baseUrl}/health`, {
       signal: controller.signal,
+      headers: state.authToken
+        ? { Authorization: `Bearer ${state.authToken}` }
+        : undefined,
     });
     clearTimeout(timeout);
 

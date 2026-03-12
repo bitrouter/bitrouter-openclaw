@@ -31,6 +31,7 @@ import type {
 } from "./types.js";
 import { DEFAULTS } from "./types.js";
 import { PROVIDER_API_BASES, toEnvVarKey, parseEnvFile, serializeEnvFile } from "./config.js";
+import { ensureAuth } from "./auth.js";
 
 // ── Well-known upstream providers ────────────────────────────────────
 
@@ -174,6 +175,9 @@ export async function byokWizard(
   const homeDir = resolveSetupHomeDir(ctx);
   writeKeyToEnv(homeDir, providerChoice, apiKey.trim());
 
+  // Generate Ed25519 keypair + JWT for authenticating with local BitRouter.
+  const jwt = ensureAuth(homeDir);
+
   await prompter.outro(
     "BitRouter configured! Restart the gateway to activate routing:\n" +
       "  openclaw gateway restart"
@@ -186,11 +190,10 @@ export async function byokWizard(
   // 1. plugins.entries.bitrouter.config — stores mode/byok settings so the
   //    plugin knows it's configured on next gateway start.
   //
-  // 2. models.providers.<upstreamProvider>.baseUrl — redirects the existing
-  //    provider's HTTP requests through BitRouter. This is the real routing
-  //    mechanism: OpenClaw keeps using the provider it knows (e.g. "openrouter")
-  //    but sends all requests to BitRouter's local endpoint instead.
-  //    BitRouter proxies them upstream using the stored API key.
+  // 2. models.providers.bitrouter — registers "bitrouter" as a provider with
+  //    baseUrl pointing to the local BitRouter instance. Combined with
+  //    interceptAllModels: true, this routes all requests through BitRouter
+  //    using providerOverride instead of URL redirect.
   const bitrouterApiBase = `http://${DEFAULTS.host}:${DEFAULTS.port}/v1`;
 
   const configPatch = {
@@ -203,23 +206,18 @@ export async function byokWizard(
               upstreamProvider: providerChoice,
               ...(apiBase ? { apiBase } : {}),
             },
-            interceptAllModels: false, // not needed — we redirect at the provider level
+            interceptAllModels: true,
           },
         },
       },
     },
-    // Redirect the upstream provider through BitRouter.
-    // After gateway restart, all "openrouter" (or chosen provider) calls
-    // go to 127.0.0.1:8787/v1 instead of the public API.
-    //
-    // mode: "merge" — keeps OpenClaw's built-in model definitions intact;
-    // we only override baseUrl for the chosen provider.
-    // models: [] — required field in ModelProviderConfig; empty is fine
-    // since the built-in model list is preserved via merge mode.
+    // Register "bitrouter" as a provider pointing to the local instance.
+    // All requests are routed via providerOverride: "bitrouter" in the
+    // before_model_resolve hook (interceptAllModels: true).
     models: {
       mode: "merge" as const,
       providers: {
-        [providerChoice]: {
+        bitrouter: {
           baseUrl: bitrouterApiBase,
           models: [],
         },
@@ -234,15 +232,14 @@ export async function byokWizard(
         credential: {
           type: "api_key" as const,
           provider: "bitrouter",
-          // Store the raw key — OpenClaw handles secure storage.
-          key: apiKey.trim(),
+          key: jwt,
         },
       },
     ],
     configPatch,
     notes: [
       `Upstream provider: ${providerMeta.label}`,
-      `BitRouter will intercept all ${providerMeta.label} requests (127.0.0.1:8787/v1).`,
+      `BitRouter will intercept all model requests via providerOverride (127.0.0.1:8787/v1).`,
       "Restart the gateway to activate: openclaw gateway restart",
       "To change settings, run: openclaw models auth login --provider bitrouter",
     ],

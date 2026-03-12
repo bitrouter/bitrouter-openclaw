@@ -96,14 +96,9 @@ export function serializeEnvFile(entries: Map<string, string>): string {
  * keys into a .env file (returned separately) to avoid secrets in YAML.
  *
  * @param config - Plugin configuration
- * @param opts.inlineSecrets - When true, write literal API keys directly
- *   into the YAML instead of extracting them to a .env file. Used when
- *   BitRouter is started in no-db mode (Option B) where it cannot load
- *   an env file. The home dir is gitignored so this is acceptable locally.
  */
 export function generateConfig(
   config: BitrouterPluginConfig,
-  opts: { inlineSecrets?: boolean } = {}
 ): {
   yaml: string;
   envVars: Record<string, string>;
@@ -131,10 +126,6 @@ export function generateConfig(
       if (entry.apiKey) {
         if (isEnvVarReference(entry.apiKey)) {
           // Already an env var reference like "${OPENAI_API_KEY}" — pass through.
-          provider.api_key = entry.apiKey;
-        } else if (opts.inlineSecrets) {
-          // No-db mode: write the key literally into YAML.
-          // The home dir is gitignored; this is acceptable for local dev.
           provider.api_key = entry.apiKey;
         } else {
           // Literal API key — store in .env and reference from YAML.
@@ -200,14 +191,13 @@ export function generateConfig(
 export function writeConfigToDir(
   config: BitrouterPluginConfig,
   homeDir: string,
-  opts: { inlineSecrets?: boolean } = {}
 ): string {
   // Ensure directory structure matches what BitRouter expects.
   fs.mkdirSync(homeDir, { recursive: true });
   fs.mkdirSync(path.join(homeDir, "run"), { recursive: true });
   fs.mkdirSync(path.join(homeDir, "logs"), { recursive: true });
 
-  const { yaml, envVars } = generateConfig(config, opts);
+  const { yaml, envVars } = generateConfig(config);
 
   // Write bitrouter.yaml
   fs.writeFileSync(path.join(homeDir, "bitrouter.yaml"), yaml, "utf-8");
