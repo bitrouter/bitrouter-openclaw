@@ -194,13 +194,11 @@ export function resolveDynamicRoute(
 // ── Model name resolution ────────────────────────────────────────────
 
 /**
- * Resolve the model name for a given agent from the OpenClaw config.
+ * Resolve the full model string (with provider prefix) for a given agent.
  *
- * The before_model_resolve hook receives `{ prompt }` and `{ agentId }`,
- * not the model name directly. We look up the agent's configured primary
- * model in `api.config.agents` and strip the provider prefix.
+ * Returns the raw value from OpenClaw config, e.g. "openai/gpt-4o".
  */
-function resolveModelName(api: OpenClawPluginApi, agentId: string): string {
+function resolveFullModelString(api: OpenClawPluginApi, agentId: string): string {
   const agentList = (api.config as {
     agents?: {
       list?: Array<{
@@ -223,8 +221,18 @@ function resolveModelName(api: OpenClawPluginApi, agentId: string): string {
     return undefined;
   };
 
-  const fullModel =
-    extract(agentModel) ?? extract(defaultModel) ?? "default";
+  return extract(agentModel) ?? extract(defaultModel) ?? "default";
+}
+
+/**
+ * Resolve the model name for a given agent from the OpenClaw config.
+ *
+ * The before_model_resolve hook receives `{ prompt }` and `{ agentId }`,
+ * not the model name directly. We look up the agent's configured primary
+ * model in `api.config.agents` and strip the provider prefix.
+ */
+function resolveModelName(api: OpenClawPluginApi, agentId: string): string {
+  const fullModel = resolveFullModelString(api, agentId);
 
   // Strip provider prefix (e.g. "openrouter/auto" → "auto")
   return fullModel.includes("/")
@@ -277,8 +285,18 @@ export function registerModelInterceptor(
 
       // 2. Existing static route logic.
       if (interceptAll) {
-        // Route everything through BitRouter (it can handle any model
-        // via direct routing like "openai:gpt-4o").
+        // In auto mode, preserve the provider prefix so BitRouter can
+        // route to the correct upstream via direct routing format
+        // (e.g. "openai/gpt-4o" → "openai:gpt-4o").
+        if (config.mode === "auto") {
+          const fullModel = resolveFullModelString(api, ctx.agentId ?? "main");
+          const directRoute = fullModel.includes("/")
+            ? fullModel.replace("/", ":")
+            : modelName;
+          return { providerOverride: "bitrouter", modelOverride: directRoute };
+        }
+
+        // Non-auto interceptAll: use stripped model name.
         return { providerOverride: "bitrouter", modelOverride: modelName };
       }
 

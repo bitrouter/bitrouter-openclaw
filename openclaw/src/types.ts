@@ -18,7 +18,7 @@ import type { ChildProcess } from "node:child_process";
  *           BitRouter holds them and proxies requests.
  * "cloud" — sign in to BitRouterAI cloud (stub; OAuth coming in next version).
  */
-export type SetupMode = "byok" | "cloud";
+export type SetupMode = "byok" | "cloud" | "auto";
 
 /**
  * BYOK upstream provider config — stored in pluginConfig after wizard runs.
@@ -191,6 +191,8 @@ export interface BitrouterState {
   dynamicRoutes: Map<string, DynamicRoute>;
   /** Cached metrics from GET /v1/metrics (null if unavailable). */
   metrics: MetricsResponse | null;
+  /** Providers detected via env var sniffing in auto mode. */
+  autoDetectedProviders?: import("./auto-detect.js").DetectedProvider[];
 }
 
 // ── Re-exports from OpenClaw plugin SDK ──────────────────────────────

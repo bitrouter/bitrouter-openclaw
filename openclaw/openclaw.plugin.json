@@ -1,6 +1,6 @@
 {
-  "id": "bitrouter",
-  "name": "BitRouter",
+  "id": "openclaw-bitrouter",
+  "name": "OpenClaw BitRouter Plugin",
   "version": "0.1.0",
   "description": "Route LLM requests through BitRouter — a local multi-provider proxy with failover, load balancing, and unified API key management.",
   "entry": "dist/index.js",
@@ -126,8 +126,8 @@
       },
       "mode": {
         "type": "string",
-        "enum": ["byok", "cloud"],
-        "description": "Setup mode chosen during the first-run wizard. 'byok' = bring your own API key. 'cloud' = BitRouter Cloud (coming soon). Unset = plugin not yet configured."
+        "enum": ["byok", "cloud", "auto"],
+        "description": "Setup mode. 'auto' = detected from environment variables. 'byok' = bring your own API key (wizard). 'cloud' = BitRouter Cloud (coming soon). Unset = not yet configured and no env vars found."
       },
       "byok": {
         "type": "object",

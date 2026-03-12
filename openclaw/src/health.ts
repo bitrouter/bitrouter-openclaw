@@ -15,6 +15,7 @@ import type {
 import { DEFAULTS } from "./types.js";
 import { refreshRoutes } from "./routing.js";
 import { refreshMetrics } from "./metrics.js";
+import { detectProviders } from "./auto-detect.js";
 
 // ── Single health check ──────────────────────────────────────────────
 
@@ -81,6 +82,11 @@ export function startHealthCheck(
     tickCount++;
     if (isHealthy && tickCount % DEFAULTS.routeRefreshInterval === 0) {
       await refreshRoutes(state, api);
+
+      // In auto mode, re-scan for provider changes at the same cadence.
+      if (config.mode === "auto") {
+        rescanProviders(api, state);
+      }
     }
   }, interval);
 }
@@ -91,6 +97,35 @@ export function stopHealthCheck(state: BitrouterState): void {
     clearInterval(state.healthCheckTimer);
     state.healthCheckTimer = null;
   }
+}
+
+// ── Auto-mode provider re-scan ───────────────────────────────────────
+
+/**
+ * Re-scan environment for provider changes in auto mode.
+ * Logs additions/removals but does NOT hot-reload — the user must
+ * restart the gateway to apply changes.
+ */
+function rescanProviders(api: OpenClawPluginApi, state: BitrouterState): void {
+  const newDetected = detectProviders(api);
+  const currentNames = new Set(
+    state.autoDetectedProviders?.map((p) => p.name) ?? []
+  );
+  const newNames = new Set(newDetected.map((p) => p.name));
+
+  const added = newDetected.filter((p) => !currentNames.has(p.name));
+  const removed = [...currentNames].filter((n) => !newNames.has(n));
+
+  if (added.length === 0 && removed.length === 0) return;
+
+  api.logger.info(
+    `Provider change detected: ` +
+      (added.length > 0 ? `+[${added.map((p) => p.name).join(", ")}] ` : "") +
+      (removed.length > 0 ? `-[${removed.join(", ")}]` : "")
+  );
+  api.logger.info(
+    "Restart the gateway to apply provider changes: openclaw gateway restart"
+  );
 }
 
 // ── Startup readiness poll ───────────────────────────────────────────

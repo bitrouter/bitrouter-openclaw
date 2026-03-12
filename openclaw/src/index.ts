@@ -43,6 +43,7 @@ import { registerModelInterceptor } from "./routing.js";
 import { registerAgentTools } from "./tools.js";
 import { registerFeedbackRoute } from "./feedback.js";
 import { registerGatewayMethods } from "./gateway.js";
+import { detectProviders } from "./auto-detect.js";
 
 /**
  * Plugin activation — called by OpenClaw when the plugin is loaded.
@@ -112,14 +113,35 @@ export function activate(api: OpenClawPluginApi): void {
 
   // ── Check if setup has been completed ────────────────────────────
   //
-  // If mode is unset, emit a clear hint and stop here. The daemon won't
-  // start and no tools or hooks will be registered until setup is done.
+  // If mode is unset, try auto-detection before falling back to the
+  // "not configured" hint.
   if (!config.mode) {
-    api.logger.warn(
-      "BitRouter plugin is installed but not yet configured. " +
-        "Run: openclaw models auth login --provider bitrouter"
+    const detected = detectProviders(api);
+
+    if (detected.length === 0) {
+      api.logger.warn(
+        "BitRouter plugin is installed but no API keys detected in environment. " +
+          "Run: openclaw models auth login --provider bitrouter"
+      );
+      return;
+    }
+
+    // Found providers — activate in auto mode.
+    api.logger.info(
+      `BitRouter auto-detected ${detected.length} provider(s): ` +
+        detected.map((p) => p.name).join(", ")
     );
-    return;
+    for (const p of detected) {
+      const masked = p.apiKey.length > 8
+        ? `${p.apiKey.slice(0, 4)}...${p.apiKey.slice(-4)}`
+        : "****";
+      api.logger.info(`  ${p.name}: ${p.envVarKey} found (${masked})`);
+    }
+
+    // Set mode in-memory only — auto mode re-scans on every restart.
+    config.mode = "auto";
+    config.interceptAllModels = true;
+    state.autoDetectedProviders = detected;
   }
 
   // ── Full activation (mode is set) ────────────────────────────────
@@ -160,11 +182,19 @@ export function activate(api: OpenClawPluginApi): void {
     api.logger.error(`Failed to register gateway methods: ${err}`);
   }
 
-  const upstream = config.byok?.upstreamProvider ?? "unknown";
-  api.logger.info(
-    `BitRouter plugin activated (${state.baseUrl}, mode=${config.mode}, ` +
-      `upstream=${upstream}, interceptAll=${config.interceptAllModels ?? DEFAULTS.interceptAllModels})`
-  );
+  if (config.mode === "auto") {
+    const names = state.autoDetectedProviders?.map((p) => p.name).join(", ") ?? "none";
+    api.logger.info(
+      `BitRouter plugin activated in auto mode (${state.baseUrl}, ` +
+        `providers=${names}, interceptAll=true)`
+    );
+  } else {
+    const upstream = config.byok?.upstreamProvider ?? "unknown";
+    api.logger.info(
+      `BitRouter plugin activated (${state.baseUrl}, mode=${config.mode}, ` +
+        `upstream=${upstream}, interceptAll=${config.interceptAllModels ?? DEFAULTS.interceptAllModels})`
+    );
+  }
 }
 
 // OpenClaw plugin definition — the default export.

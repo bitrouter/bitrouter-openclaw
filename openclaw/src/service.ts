@@ -30,6 +30,7 @@ import { startHealthCheck, stopHealthCheck, waitForReady } from "./health.js";
 import { refreshRoutes } from "./routing.js";
 import { refreshMetrics } from "./metrics.js";
 import { resolveBinaryPath } from "./binary.js";
+import { buildAutoProviderConfig, type DetectedProvider } from "./auto-detect.js";
 
 // ── Service registration ─────────────────────────────────────────────
 
@@ -52,10 +53,9 @@ export function registerBitrouterService(
       // 1. Resolve home directory and write config files.
       state.homeDir = resolveHomeDir(ctx.stateDir);
 
-      // For BYOK mode, synthesize a provider entry from the stored credential.
-      // The wizard writes the API key into the auth-profiles credential store;
-      // we read it back here so BitRouter's YAML can reference it.
-      const effectiveConfig = buildEffectiveConfig(config, state.homeDir);
+      // Synthesize provider entries from stored credentials (BYOK) or
+      // auto-detected env vars (auto mode).
+      const effectiveConfig = buildEffectiveConfig(config, state.homeDir, state.autoDetectedProviders);
 
       // inlineSecrets: true because we run with --db "" (no-auth mode),
       // so BitRouter cannot load a .env file — keys must be in the YAML.
@@ -189,8 +189,19 @@ export function registerBitrouterService(
  */
 function buildEffectiveConfig(
   config: BitrouterPluginConfig,
-  homeDir: string
+  homeDir: string,
+  autoDetected?: DetectedProvider[]
 ): BitrouterPluginConfig {
+  // ── Auto mode: multi-provider config from env var scan ──
+  if (config.mode === "auto" && autoDetected && autoDetected.length > 0) {
+    const { providers, models } = buildAutoProviderConfig(autoDetected);
+    return {
+      ...config,
+      providers: { ...config.providers, ...providers },
+      models: { ...config.models, ...models },
+    };
+  }
+
   if (config.mode !== "byok" || !config.byok?.upstreamProvider) {
     return config;
   }
