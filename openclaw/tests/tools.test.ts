@@ -23,7 +23,8 @@ function createMockState(
     healthCheckTimer: null,
     homeDir: "/tmp/bitrouter-test",
     metrics: null,
-    authToken: null,
+    apiToken: null,
+    adminToken: null,
     ...overrides,
   };
 }
@@ -79,7 +80,7 @@ beforeEach(async () => {
 const stateDirRef = { value: "/tmp" };
 
 describe("tool registration", () => {
-  it("registers all 4 CLI-mapped tools", () => {
+  it("registers all 7 tools", () => {
     const api = createMockApi();
     const state = createMockState();
     registerAgentTools(api as unknown as OpenClawPluginApi, {}, state, stateDirRef);
@@ -88,7 +89,10 @@ describe("tool registration", () => {
     expect(api._tools.has("bitrouter_keygen")).toBe(true);
     expect(api._tools.has("bitrouter_account")).toBe(true);
     expect(api._tools.has("bitrouter_keys")).toBe(true);
-    expect(api._tools.size).toBe(4);
+    expect(api._tools.has("bitrouter_add_route")).toBe(true);
+    expect(api._tools.has("bitrouter_remove_route")).toBe(true);
+    expect(api._tools.has("bitrouter_list_routes")).toBe(true);
+    expect(api._tools.size).toBe(7);
   });
 
   it("does not register removed tools", () => {
@@ -100,7 +104,6 @@ describe("tool registration", () => {
     expect(api._tools.has("bitrouter_stop")).toBe(false);
     expect(api._tools.has("bitrouter_restart")).toBe(false);
     expect(api._tools.has("bitrouter_list_providers")).toBe(false);
-    expect(api._tools.has("bitrouter_list_routes")).toBe(false);
     expect(api._tools.has("bitrouter_create_route")).toBe(false);
     expect(api._tools.has("bitrouter_delete_route")).toBe(false);
     expect(api._tools.has("bitrouter_route_metrics")).toBe(false);

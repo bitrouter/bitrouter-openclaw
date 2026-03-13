@@ -68,7 +68,8 @@ export function activate(api: OpenClawPluginApi): void {
     healthCheckTimer: null,
     homeDir: resolveHomeDir(stateDirRef.value),
     metrics: null,
-    authToken: null,
+    apiToken: null,
+    adminToken: null,
   };
 
   // ── Always register the provider so the auth wizard is reachable ──

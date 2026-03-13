@@ -43,7 +43,7 @@ export interface BitrouterPluginConfig {
   interceptAllModels?: boolean;
   providers?: Record<string, ProviderEntry>;
   models?: Record<string, ModelEntry>;
-  routing?: RoutingConfig;
+  guardrails?: GuardrailPluginConfig;
   /** Set by the first-run wizard. Undefined = not yet configured. */
   mode?: SetupMode;
   /** BYOK upstream provider config. Set when mode === "byok". */
@@ -95,40 +95,66 @@ export interface HealthStatus {
 export interface EndpointMetrics {
   total_requests: number;
   total_errors: number;
-  error_rate: number;
-  latency_p50_ms: number;
-  latency_p99_ms: number;
+  latency_p50_ms?: number;
+  latency_p99_ms?: number;
 }
 
 /** Per-route metrics from GET /v1/metrics. */
 export interface RouteMetrics {
-  model: string;
   total_requests: number;
   total_errors: number;
-  error_rate: number;
-  latency_p50_ms: number;
-  latency_p99_ms: number;
+  latency_p50_ms?: number;
+  latency_p99_ms?: number;
+  avg_input_tokens?: number;
+  avg_output_tokens?: number;
+  last_used?: string;
   by_endpoint: Record<string, EndpointMetrics>;
 }
 
 /** Full response from GET /v1/metrics. */
 export interface MetricsResponse {
+  uptime_seconds: number;
   routes: Record<string, RouteMetrics>;
 }
 
-// ── Routing config ──────────────────────────────────────────────────
+// ── Guardrails config ───────────────────────────────────────────────
 
-/** Metrics-informed routing configuration. */
-export interface RoutingConfig {
-  errorRateThreshold?: number;
-  minRequestsForScoring?: number;
-  preferMetrics?: boolean;
-  /**
-   * TEMPORARY: Generate mock metrics from known routes when
-   * the BitRouter binary doesn't support GET /v1/metrics yet.
-   * Remove once bitrouter/bitrouter#70 ships.
-   */
-  mockMetrics?: boolean;
+/** Content guardrail configuration for scanning traffic. */
+export interface GuardrailPluginConfig {
+  enabled?: boolean;
+  disabledPatterns?: string[];
+  customPatterns?: Array<{ name: string; regex: string; direction?: "upgoing" | "downgoing" | "both" }>;
+  upgoing?: Record<string, "warn" | "redact" | "block">;
+  downgoing?: Record<string, "warn" | "redact" | "block">;
+}
+
+// ── Admin API types ─────────────────────────────────────────────────
+
+/** A dynamic route definition for POST /admin/routes. */
+export interface DynamicRoute {
+  model: string;
+  strategy?: "priority" | "load_balance";
+  endpoints: RouteEndpoint[];
+}
+
+/** An endpoint within a dynamic route. */
+export interface RouteEndpoint {
+  provider: string;
+  model_id: string;
+}
+
+/** A route entry from GET /admin/routes. */
+export interface AdminRouteEntry {
+  model: string;
+  strategy?: string;
+  endpoints: AdminRouteEndpoint[];
+  source: "config" | "dynamic";
+}
+
+/** An endpoint within an admin route entry. */
+export interface AdminRouteEndpoint {
+  provider: string;
+  model_id: string;
 }
 
 // ── Tool result type ─────────────────────────────────────────────────
@@ -163,8 +189,10 @@ export interface BitrouterState {
   homeDir: string;
   /** Cached metrics from GET /v1/metrics (null if unavailable). */
   metrics: MetricsResponse | null;
-  /** JWT token for authenticating with the local BitRouter instance. */
-  authToken: string | null;
+  /** JWT token for API-scope requests to the local BitRouter instance. */
+  apiToken: string | null;
+  /** JWT token for admin-scope requests (24h expiry, auto-refreshed). */
+  adminToken: string | null;
   /** Providers detected via env var sniffing in auto mode. */
   autoDetectedProviders?: import("./auto-detect.js").DetectedProvider[];
 }

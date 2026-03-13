@@ -22,7 +22,6 @@
 import type {
   BitrouterPluginConfig,
   BitrouterState,
-  EndpointMetrics,
   OpenClawPluginApi,
   PluginHookBeforeModelResolveEvent,
   PluginHookBeforeModelResolveResult,
@@ -49,8 +48,8 @@ export async function refreshRoutes(
 
     const res = await fetch(`${state.baseUrl}/v1/routes`, {
       signal: controller.signal,
-      headers: state.authToken
-        ? { Authorization: `Bearer ${state.authToken}` }
+      headers: state.apiToken
+        ? { Authorization: `Bearer ${state.apiToken}` }
         : undefined,
     });
     clearTimeout(timeout);
@@ -71,78 +70,6 @@ export async function refreshRoutes(
     // Don't clear existing routes — they may still be valid.
     api.logger.warn(`Route refresh failed: ${err}`);
   }
-}
-
-// ── Metrics-informed endpoint selection ───────────────────────────────
-
-/**
- * Score an endpoint based on its metrics. Higher is better.
- * score = (1 - error_rate) / latency_p50_ms
- *
- * Returns null if the endpoint should be skipped (circuit breaker).
- */
-export function scoreEndpoint(
-  metrics: EndpointMetrics | undefined,
-  errorRateThreshold: number,
-  minRequests: number
-): number | null {
-  if (!metrics || metrics.total_requests < minRequests) {
-    return 0; // No data — neutral score, don't skip.
-  }
-
-  // Circuit breaker: skip endpoints with error rate above threshold.
-  if (metrics.error_rate > errorRateThreshold) {
-    return null;
-  }
-
-  const latency = Math.max(metrics.latency_p50_ms, 1); // avoid division by zero
-  return (1 - metrics.error_rate) / latency;
-}
-
-/**
- * Select the best endpoint from a list using metrics data.
- * Falls back to the first endpoint if no metrics or all are tripped.
- */
-export function selectBestEndpoint(
-  endpoints: Array<{ provider: string; modelId: string }>,
-  modelName: string,
-  state: BitrouterState,
-  config: BitrouterPluginConfig
-): { provider: string; modelId: string } {
-  if (endpoints.length <= 1 || !state.metrics) {
-    return endpoints[0];
-  }
-
-  const routeMetrics = state.metrics.routes[modelName];
-  if (!routeMetrics?.by_endpoint) {
-    return endpoints[0];
-  }
-
-  const threshold = config.routing?.errorRateThreshold ?? 0.5;
-  const minReqs = config.routing?.minRequestsForScoring ?? 5;
-
-  let bestScore = -1;
-  let bestEndpoint = endpoints[0];
-  let allTripped = true;
-
-  for (const ep of endpoints) {
-    const key = `${ep.provider}:${ep.modelId}`;
-    const epMetrics = routeMetrics.by_endpoint[key];
-    const score = scoreEndpoint(epMetrics, threshold, minReqs);
-
-    if (score !== null) {
-      allTripped = false;
-      if (score > bestScore) {
-        bestScore = score;
-        bestEndpoint = ep;
-      }
-    }
-  }
-
-  // If all endpoints are circuit-broken, fall back to first (let BitRouter handle it).
-  if (allTripped) return endpoints[0];
-
-  return bestEndpoint;
 }
 
 // ── Model name resolution ────────────────────────────────────────────

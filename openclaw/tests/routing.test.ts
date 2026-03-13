@@ -2,14 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   refreshRoutes,
   registerModelInterceptor,
-  scoreEndpoint,
-  selectBestEndpoint,
 } from "../src/routing.js";
 import type {
   BitrouterState,
   BitrouterPluginConfig,
-  EndpointMetrics,
-  MetricsResponse,
   OpenClawPluginApi,
   PluginHookBeforeModelResolveEvent,
   PluginHookAgentContext,
@@ -27,7 +23,8 @@ function createMockState(overrides?: Partial<BitrouterState>): BitrouterState {
     healthCheckTimer: null,
     homeDir: "/tmp/bitrouter-test",
     metrics: null,
-    authToken: null,
+    apiToken: null,
+    adminToken: null,
     ...overrides,
   };
 }
@@ -215,166 +212,3 @@ describe("registerModelInterceptor", () => {
   });
 });
 
-// ── scoreEndpoint ───────────────────────────────────────────────────
-
-describe("scoreEndpoint", () => {
-  it("returns 0 for undefined metrics", () => {
-    expect(scoreEndpoint(undefined, 0.5, 5)).toBe(0);
-  });
-
-  it("returns 0 for metrics below minRequests", () => {
-    const metrics: EndpointMetrics = {
-      total_requests: 3,
-      total_errors: 0,
-      error_rate: 0,
-      latency_p50_ms: 100,
-      latency_p99_ms: 200,
-    };
-    expect(scoreEndpoint(metrics, 0.5, 5)).toBe(0);
-  });
-
-  it("returns null (circuit-broken) when error rate exceeds threshold", () => {
-    const metrics: EndpointMetrics = {
-      total_requests: 100,
-      total_errors: 60,
-      error_rate: 0.6,
-      latency_p50_ms: 100,
-      latency_p99_ms: 200,
-    };
-    expect(scoreEndpoint(metrics, 0.5, 5)).toBeNull();
-  });
-
-  it("returns positive score for healthy endpoint", () => {
-    const metrics: EndpointMetrics = {
-      total_requests: 100,
-      total_errors: 2,
-      error_rate: 0.02,
-      latency_p50_ms: 100,
-      latency_p99_ms: 200,
-    };
-    const score = scoreEndpoint(metrics, 0.5, 5);
-    expect(score).not.toBeNull();
-    expect(score!).toBeGreaterThan(0);
-  });
-
-  it("scores faster endpoints higher", () => {
-    const fast: EndpointMetrics = {
-      total_requests: 100,
-      total_errors: 2,
-      error_rate: 0.02,
-      latency_p50_ms: 50,
-      latency_p99_ms: 100,
-    };
-    const slow: EndpointMetrics = {
-      total_requests: 100,
-      total_errors: 2,
-      error_rate: 0.02,
-      latency_p50_ms: 500,
-      latency_p99_ms: 1000,
-    };
-    expect(scoreEndpoint(fast, 0.5, 5)!).toBeGreaterThan(
-      scoreEndpoint(slow, 0.5, 5)!
-    );
-  });
-});
-
-// ── selectBestEndpoint ──────────────────────────────────────────────
-
-describe("selectBestEndpoint", () => {
-  it("returns first endpoint when no metrics available", () => {
-    const state = createMockState();
-    const endpoints = [
-      { provider: "openai", modelId: "gpt-4o" },
-      { provider: "anthropic", modelId: "claude-sonnet" },
-    ];
-    const result = selectBestEndpoint(endpoints, "fast", state, {});
-    expect(result).toEqual({ provider: "openai", modelId: "gpt-4o" });
-  });
-
-  it("returns first endpoint for single endpoint", () => {
-    const state = createMockState();
-    const endpoints = [{ provider: "openai", modelId: "gpt-4o" }];
-    const result = selectBestEndpoint(endpoints, "fast", state, {});
-    expect(result).toEqual({ provider: "openai", modelId: "gpt-4o" });
-  });
-
-  it("selects endpoint with better metrics", () => {
-    const metrics: MetricsResponse = {
-      routes: {
-        fast: {
-          model: "fast",
-          total_requests: 100,
-          total_errors: 10,
-          error_rate: 0.1,
-          latency_p50_ms: 200,
-          latency_p99_ms: 800,
-          by_endpoint: {
-            "openai:gpt-4o": {
-              total_requests: 50,
-              total_errors: 1,
-              error_rate: 0.02,
-              latency_p50_ms: 100,
-              latency_p99_ms: 300,
-            },
-            "anthropic:claude-sonnet": {
-              total_requests: 50,
-              total_errors: 9,
-              error_rate: 0.18,
-              latency_p50_ms: 300,
-              latency_p99_ms: 1000,
-            },
-          },
-        },
-      },
-    };
-
-    const state = createMockState({ metrics });
-    const endpoints = [
-      { provider: "openai", modelId: "gpt-4o" },
-      { provider: "anthropic", modelId: "claude-sonnet" },
-    ];
-    const result = selectBestEndpoint(endpoints, "fast", state, {});
-    // OpenAI has lower error rate and lower latency.
-    expect(result).toEqual({ provider: "openai", modelId: "gpt-4o" });
-  });
-
-  it("falls back to first endpoint when all are circuit-broken", () => {
-    const metrics: MetricsResponse = {
-      routes: {
-        fast: {
-          model: "fast",
-          total_requests: 100,
-          total_errors: 60,
-          error_rate: 0.6,
-          latency_p50_ms: 200,
-          latency_p99_ms: 800,
-          by_endpoint: {
-            "openai:gpt-4o": {
-              total_requests: 50,
-              total_errors: 30,
-              error_rate: 0.6,
-              latency_p50_ms: 200,
-              latency_p99_ms: 800,
-            },
-            "anthropic:claude-sonnet": {
-              total_requests: 50,
-              total_errors: 30,
-              error_rate: 0.6,
-              latency_p50_ms: 200,
-              latency_p99_ms: 800,
-            },
-          },
-        },
-      },
-    };
-
-    const state = createMockState({ metrics });
-    const endpoints = [
-      { provider: "openai", modelId: "gpt-4o" },
-      { provider: "anthropic", modelId: "claude-sonnet" },
-    ];
-    const result = selectBestEndpoint(endpoints, "fast", state, {});
-    // All tripped — fall back to first.
-    expect(result).toEqual({ provider: "openai", modelId: "gpt-4o" });
-  });
-});
