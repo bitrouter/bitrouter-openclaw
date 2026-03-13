@@ -42,7 +42,7 @@ vi.mock("../src/metrics.js", () => ({
 }));
 
 vi.mock("../src/auth.js", () => ({
-  ensureAuth: vi.fn(() => "mock-jwt-token"),
+  ensureAuth: vi.fn(() => ({ apiToken: "mock-api-jwt", adminToken: "mock-admin-jwt" })),
 }));
 
 vi.mock("../src/auto-detect.js", () => ({
