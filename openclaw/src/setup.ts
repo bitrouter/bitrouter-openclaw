@@ -175,8 +175,8 @@ export async function byokWizard(
   const homeDir = resolveSetupHomeDir(ctx);
   writeKeyToEnv(homeDir, providerChoice, apiKey.trim());
 
-  // Generate Ed25519 keypair + JWT for authenticating with local BitRouter.
-  const jwt = ensureAuth(homeDir);
+  // Generate Ed25519 keypair + JWTs for authenticating with local BitRouter.
+  const { apiToken: jwt } = ensureAuth(homeDir);
 
   await prompter.outro(
     "BitRouter configured! Restart the gateway to activate routing:\n" +

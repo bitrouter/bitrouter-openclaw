@@ -17,7 +17,8 @@ function createMockState(overrides?: Partial<BitrouterState>): BitrouterState {
     healthCheckTimer: null,
     homeDir: "/tmp/bitrouter-test",
     metrics: null,
-    authToken: null,
+    apiToken: null,
+    adminToken: null,
     ...overrides,
   };
 }
@@ -42,26 +43,23 @@ function createMockApi() {
 }
 
 const sampleMetrics: MetricsResponse = {
+  uptime_seconds: 3600,
   routes: {
     fast: {
-      model: "fast",
       total_requests: 100,
       total_errors: 5,
-      error_rate: 0.05,
       latency_p50_ms: 200,
       latency_p99_ms: 800,
       by_endpoint: {
         "openai:gpt-4o": {
           total_requests: 60,
           total_errors: 2,
-          error_rate: 0.033,
           latency_p50_ms: 180,
           latency_p99_ms: 700,
         },
         "anthropic:claude-sonnet": {
           total_requests: 40,
           total_errors: 3,
-          error_rate: 0.075,
           latency_p50_ms: 230,
           latency_p99_ms: 900,
         },
@@ -110,7 +108,7 @@ describe("refreshMetrics", () => {
     expect(api.logger.warn).toHaveBeenCalled();
   });
 
-  it("returns null on 404 without warning (no mock)", async () => {
+  it("returns null on 404 without warning", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -125,55 +123,6 @@ describe("refreshMetrics", () => {
     const result = await refreshMetrics(state, api);
 
     expect(result).toBeNull();
-    expect(api.logger.warn).not.toHaveBeenCalled();
-  });
-
-  it("generates mock metrics on 404 when mockMetrics=true", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 404,
-        statusText: "Not Found",
-      })
-    );
-
-    const state = createMockState({
-      knownRoutes: [
-        { model: "fast", provider: "openai", protocol: "openai" as const },
-        { model: "smart", provider: "anthropic", protocol: "anthropic" as const },
-      ],
-    });
-    const api = createMockApi();
-    const config = { routing: { mockMetrics: true } };
-    const result = await refreshMetrics(state, api, config);
-
-    expect(result).not.toBeNull();
-    expect(result!.routes.fast).toBeDefined();
-    expect(result!.routes.smart).toBeDefined();
-    expect(result!.routes.fast.total_requests).toBeGreaterThan(0);
-    expect(result!.routes.fast.latency_p50_ms).toBeGreaterThan(0);
-    expect(state.metrics).toEqual(result);
-  });
-
-  it("generates mock metrics on connection error when mockMetrics=true", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new Error("connection refused"))
-    );
-
-    const state = createMockState({
-      knownRoutes: [
-        { model: "fast", provider: "openai", protocol: "openai" as const },
-      ],
-    });
-    const api = createMockApi();
-    const config = { routing: { mockMetrics: true } };
-    const result = await refreshMetrics(state, api, config);
-
-    expect(result).not.toBeNull();
-    expect(result!.routes.fast).toBeDefined();
-    // Should not warn when falling back to mock.
     expect(api.logger.warn).not.toHaveBeenCalled();
   });
 

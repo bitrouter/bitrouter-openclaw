@@ -169,21 +169,35 @@ export function mintJwt(
   return `${signingInput}.${base64urlEncode(signature)}`;
 }
 
+// ── Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Decode the `exp` claim from a JWT without verifying the signature.
+ * Returns null if the token is malformed or has no exp claim.
+ */
+function decodeExp(jwt: string): number | null {
+  try {
+    const parts = jwt.split(".");
+    if (parts.length !== 3) return null;
+    const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString()) as { exp?: number };
+    return claims.exp ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ── High-level API ────────────────────────────────────────────────────
 
 /**
- * Ensure a keypair exists and return a stable API-scope JWT.
+ * Ensure a keypair exists and return both API-scope and admin-scope JWTs.
  *
- * Idempotent: reuses an existing keypair and cached token if present.
- * The JWT has no iat/exp — the same token is valid for the lifetime of
- * the keypair. This lets OpenClaw store it as a provider credential once
- * and use it across gateway restarts without re-minting.
+ * API token: no iat/exp, scope "api", cached at tokens/plugin.jwt.
+ * Admin token: scope "admin", 24h expiry, cached at tokens/admin.jwt.
+ *   Re-minted if the cached token expires within 1 hour.
  *
- * The token is cached at <homeDir>/.keys/<prefix>/tokens/plugin.jwt.
- *
- * @returns The JWT string for authenticating with BitRouter.
+ * @returns Both JWT strings for authenticating with BitRouter.
  */
-export function ensureAuth(homeDir: string): string {
+export function ensureAuth(homeDir: string): { apiToken: string; adminToken: string } {
   let keypair = loadKeypair(homeDir);
 
   if (!keypair) {
@@ -191,27 +205,59 @@ export function ensureAuth(homeDir: string): string {
     saveKeypair(homeDir, keypair.publicKey, keypair.privateKey);
   }
 
-  // Try to reuse a previously minted token — same keypair, same token.
   const activePath = path.join(homeDir, ".keys", "active");
   const activePrefix = fs.readFileSync(activePath, "utf-8").trim();
-  const tokenPath = path.join(homeDir, ".keys", activePrefix, "tokens", "plugin.jwt");
+  const tokensDir = path.join(homeDir, ".keys", activePrefix, "tokens");
+
+  // ── API token (stable, no expiry) ──
+  const apiTokenPath = path.join(tokensDir, "plugin.jwt");
+  let apiToken: string | undefined;
 
   try {
-    const cached = fs.readFileSync(tokenPath, "utf-8").trim();
-    if (cached) return cached;
+    const cached = fs.readFileSync(apiTokenPath, "utf-8").trim();
+    if (cached) apiToken = cached;
   } catch {
-    // No cached token — mint a fresh one below.
+    // No cached token — mint below.
   }
 
-  // Mint a stable JWT: no iat, no exp. Valid for the lifetime of the keypair.
-  const jwt = mintJwt(keypair.privateKey, keypair.publicKey, {
-    iss: base64urlEncode(keypair.publicKey),
-    scope: "api",
-  });
+  if (!apiToken) {
+    apiToken = mintJwt(keypair.privateKey, keypair.publicKey, {
+      iss: base64urlEncode(keypair.publicKey),
+      scope: "api",
+    });
+    fs.mkdirSync(path.dirname(apiTokenPath), { recursive: true });
+    fs.writeFileSync(apiTokenPath, apiToken + "\n", "utf-8");
+  }
 
-  // Cache it for future restarts.
-  fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
-  fs.writeFileSync(tokenPath, jwt + "\n", "utf-8");
+  // ── Admin token (24h expiry, refresh when within 1h of expiry) ──
+  const adminTokenPath = path.join(tokensDir, "admin.jwt");
+  let adminToken: string | undefined;
 
-  return jwt;
+  try {
+    const cached = fs.readFileSync(adminTokenPath, "utf-8").trim();
+    if (cached) {
+      const exp = decodeExp(cached);
+      const now = Math.floor(Date.now() / 1000);
+      if (exp && exp - now > 3600) {
+        adminToken = cached;
+      }
+      // else: expired or about to expire — re-mint below.
+    }
+  } catch {
+    // No cached token — mint below.
+  }
+
+  if (!adminToken) {
+    const now = Math.floor(Date.now() / 1000);
+    adminToken = mintJwt(keypair.privateKey, keypair.publicKey, {
+      iss: base64urlEncode(keypair.publicKey),
+      scope: "admin",
+      iat: now,
+      exp: now + 86400,
+    });
+    fs.mkdirSync(path.dirname(adminTokenPath), { recursive: true });
+    fs.writeFileSync(adminTokenPath, adminToken + "\n", "utf-8");
+  }
+
+  return { apiToken, adminToken };
 }

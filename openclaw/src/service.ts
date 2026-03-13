@@ -61,13 +61,15 @@ export function registerBitrouterService(
       writeConfigToDir(effectiveConfig, state.homeDir);
       api.logger.info(`Config written to ${state.homeDir}`);
 
-      // Generate/load Ed25519 keypair and mint a JWT for authenticating
-      // with the local BitRouter instance.
+      // Generate/load Ed25519 keypair and mint JWTs for authenticating
+      // with the local BitRouter instance (API + admin scopes).
       try {
-        state.authToken = ensureAuth(state.homeDir);
+        const tokens = ensureAuth(state.homeDir);
+        state.apiToken = tokens.apiToken;
+        state.adminToken = tokens.adminToken;
         api.logger.info("Auth keypair ready");
       } catch (err) {
-        api.logger.warn(`Failed to generate auth token: ${err}`);
+        api.logger.warn(`Failed to generate auth tokens: ${err}`);
       }
 
       // 2. Find the binary (downloads from GitHub releases if not cached).
@@ -143,7 +145,7 @@ export function registerBitrouterService(
 
         // Load the initial routing table and metrics.
         await refreshRoutes(state, api);
-        await refreshMetrics(state, api, config);
+        await refreshMetrics(state, api);
       }
 
       // 5. Start periodic health checks.
@@ -193,6 +195,18 @@ function buildEffectiveConfig(
   homeDir: string,
   autoDetected?: DetectedProvider[]
 ): BitrouterPluginConfig {
+  // ── Default guardrails when not explicitly configured ──
+  if (!config.guardrails) {
+    config = {
+      ...config,
+      guardrails: {
+        enabled: true,
+        upgoing: { private_keys: "redact", credentials: "warn", api_keys: "warn" },
+        downgoing: { suspicious_commands: "warn" },
+      },
+    };
+  }
+
   // ── Auto mode: multi-provider config from env var scan ──
   if (config.mode === "auto" && autoDetected && autoDetected.length > 0) {
     const { providers, models } = buildAutoProviderConfig(autoDetected);

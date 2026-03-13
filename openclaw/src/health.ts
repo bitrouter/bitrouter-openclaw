@@ -31,8 +31,8 @@ export async function checkHealth(state: BitrouterState): Promise<boolean> {
 
     const res = await fetch(`${state.baseUrl}/health`, {
       signal: controller.signal,
-      headers: state.authToken
-        ? { Authorization: `Bearer ${state.authToken}` }
+      headers: state.apiToken
+        ? { Authorization: `Bearer ${state.apiToken}` }
         : undefined,
     });
     clearTimeout(timeout);
@@ -77,7 +77,7 @@ export function startHealthCheck(
 
     // Refresh metrics on every healthy tick (lightweight).
     if (isHealthy) {
-      await refreshMetrics(state, api, config);
+      await refreshMetrics(state, api);
     }
 
     // Periodically refresh routes even when continuously healthy,

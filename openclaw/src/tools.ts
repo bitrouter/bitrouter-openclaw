@@ -1,9 +1,9 @@
 /**
- * Agent tools — thin wrappers around BitRouter CLI commands.
+ * Agent tools — HTTP-based wrappers around BitRouter's API endpoints
+ * plus CLI wrappers for local crypto operations.
  *
- * Each tool maps 1:1 to a CLI subcommand. The agent gets structured
- * access to the same operations available via `bitrouter <command>`.
- * A companion skill teaches when and how to use these effectively.
+ * v0.6.1: status/account tools use HTTP endpoints instead of CLI.
+ * New admin route management tools (add/remove/list routes).
  */
 
 import { execFile } from "node:child_process";
@@ -49,6 +49,53 @@ function runCli(
       }
     );
   });
+}
+
+/**
+ * Fetch JSON from a BitRouter HTTP endpoint.
+ *
+ * @param state - Plugin runtime state (provides baseUrl and tokens).
+ * @param urlPath - URL path (e.g. "/health", "/v1/routes").
+ * @param method - HTTP method (defaults to "GET").
+ * @param body - Optional JSON body for POST/PUT/PATCH.
+ * @param useAdmin - Use admin token instead of API token.
+ */
+async function fetchJson(
+  state: BitrouterState,
+  urlPath: string,
+  method: string = "GET",
+  body?: unknown,
+  useAdmin: boolean = false
+): Promise<{ ok: true; data: unknown } | { ok: false; error: string }> {
+  try {
+    const token = useAdmin ? state.adminToken : state.apiToken;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+
+    const res = await fetch(`${state.baseUrl}${urlPath}`, {
+      method,
+      signal: controller.signal,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { ok: false, error: `${res.status} ${res.statusText}${text ? `: ${text}` : ""}` };
+    }
+
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      return { ok: true, data: await res.json() };
+    }
+    return { ok: true, data: await res.text() };
+  } catch (err) {
+    return { ok: false, error: `${err}` };
+  }
 }
 
 /**
@@ -124,12 +171,37 @@ export function registerAgentTools(
     {
       name: "bitrouter_status",
       description:
-        "Show BitRouter daemon status, listen address, configured providers, and resolved paths.",
+        "Show BitRouter daemon status including health, routes, and metrics via HTTP API.",
       parameters: Type.Object({}),
       execute: async () => {
-        const bin = await getBinary();
-        if (typeof bin !== "string") return bin;
-        return runCli(bin, state.homeDir, ["status"]);
+        const sections: string[] = [];
+
+        // Health
+        const health = await fetchJson(state, "/health");
+        if (health.ok) {
+          sections.push(`Health: ${JSON.stringify(health.data)}`);
+        } else {
+          sections.push(`Health: unreachable (${health.error})`);
+        }
+
+        // Routes
+        const routes = await fetchJson(state, "/v1/routes");
+        if (routes.ok) {
+          const data = routes.data as { routes?: unknown[] };
+          sections.push(`Routes (${data.routes?.length ?? 0}):\n${JSON.stringify(data.routes, null, 2)}`);
+        } else {
+          sections.push(`Routes: unavailable (${routes.error})`);
+        }
+
+        // Metrics
+        const metrics = await fetchJson(state, "/v1/metrics");
+        if (metrics.ok) {
+          sections.push(`Metrics:\n${JSON.stringify(metrics.data, null, 2)}`);
+        } else {
+          sections.push(`Metrics: unavailable (${metrics.error})`);
+        }
+
+        return textResult(sections.join("\n\n"));
       },
     },
     { optional: true }
@@ -203,20 +275,18 @@ export function registerAgentTools(
     {
       name: "bitrouter_account",
       description:
-        "Manage local Ed25519 account keypairs used to sign BitRouter JWTs.",
+        "Manage BitRouter accounts. 'list' queries the server; 'set' manages local keypairs.",
       parameters: Type.Object({
         action: Type.Optional(
           Type.Union(
             [
               Type.Literal("list"),
-              Type.Literal("generate"),
               Type.Literal("set"),
             ],
             {
               description:
-                'Action to perform. "list" (default): show all keypairs. ' +
-                '"generate": create a new Ed25519 keypair. ' +
-                '"set": set the active account.',
+                'Action to perform. "list" (default): list accounts from server. ' +
+                '"set": set the active local account keypair.',
             }
           )
         ),
@@ -228,26 +298,28 @@ export function registerAgentTools(
         ),
       }),
       execute: async (_id, params) => {
-        const bin = await getBinary();
-        if (typeof bin !== "string") return bin;
-
         const action = (params.action as string) ?? "list";
-        const args = ["account"];
 
-        if (action === "generate") {
-          args.push("--generate-key");
-        } else if (action === "set") {
+        if (action === "list") {
+          const result = await fetchJson(state, "/accounts", "GET", undefined, true);
+          if (!result.ok) {
+            return errorResult(`Failed to list accounts: ${result.error}`);
+          }
+          return textResult(JSON.stringify(result.data, null, 2));
+        }
+
+        if (action === "set") {
           if (!params.id) {
             return errorResult(
               'The "id" parameter is required when action is "set".'
             );
           }
-          args.push("--set", params.id as string);
-        } else {
-          args.push("--list");
+          const bin = await getBinary();
+          if (typeof bin !== "string") return bin;
+          return runCli(bin, state.homeDir, ["account", "--set", params.id as string]);
         }
 
-        return runCli(bin, state.homeDir, args);
+        return errorResult(`Unknown action: ${action}`);
       },
     },
     { optional: true }
@@ -309,6 +381,90 @@ export function registerAgentTools(
         }
 
         return runCli(bin, state.homeDir, args);
+      },
+    },
+    { optional: true }
+  );
+
+  // ── bitrouter_add_route ──────────────────────────────────────────
+
+  register(
+    {
+      name: "bitrouter_add_route",
+      description:
+        "Add a dynamic route to BitRouter via the admin API.",
+      parameters: Type.Object({
+        model: Type.String({
+          description: "Virtual model name for the route (e.g. 'fast', 'gpt-4o').",
+        }),
+        strategy: Type.Optional(
+          Type.Union(
+            [Type.Literal("priority"), Type.Literal("load_balance")],
+            { description: 'Routing strategy. Defaults to "priority".' }
+          )
+        ),
+        endpoints: Type.Array(
+          Type.Object({
+            provider: Type.String({ description: "Provider name." }),
+            model_id: Type.String({ description: "Upstream model ID." }),
+          }),
+          { description: "List of provider endpoints for this route." }
+        ),
+      }),
+      execute: async (_id, params) => {
+        const body: Record<string, unknown> = {
+          model: params.model,
+          endpoints: params.endpoints,
+        };
+        if (params.strategy) body.strategy = params.strategy;
+        const result = await fetchJson(state, "/admin/routes", "POST", body, true);
+        if (!result.ok) {
+          return errorResult(`Failed to add route: ${result.error}`);
+        }
+        return textResult(`Route "${params.model}" added successfully.`);
+      },
+    },
+    { optional: true }
+  );
+
+  // ── bitrouter_remove_route ───────────────────────────────────────
+
+  register(
+    {
+      name: "bitrouter_remove_route",
+      description:
+        "Remove a dynamic route from BitRouter via the admin API.",
+      parameters: Type.Object({
+        model: Type.String({
+          description: "Virtual model name to remove.",
+        }),
+      }),
+      execute: async (_id, params) => {
+        const model = encodeURIComponent(params.model as string);
+        const result = await fetchJson(state, `/admin/routes/${model}`, "DELETE", undefined, true);
+        if (!result.ok) {
+          return errorResult(`Failed to remove route: ${result.error}`);
+        }
+        return textResult(`Route "${params.model}" removed successfully.`);
+      },
+    },
+    { optional: true }
+  );
+
+  // ── bitrouter_list_routes ────────────────────────────────────────
+
+  register(
+    {
+      name: "bitrouter_list_routes",
+      description:
+        "List all routes (config + dynamic) from BitRouter via the admin API.",
+      parameters: Type.Object({}),
+      execute: async () => {
+        const result = await fetchJson(state, "/admin/routes", "GET", undefined, true);
+        if (!result.ok) {
+          return errorResult(`Failed to list routes: ${result.error}`);
+        }
+        return textResult(JSON.stringify(result.data, null, 2));
       },
     },
     { optional: true }
