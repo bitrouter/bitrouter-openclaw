@@ -33,7 +33,8 @@
     "node": ">=18"
   },
   "openclaw": {
-    "id": "bitrouter"
+    "id": "bitrouter",
+    "extensions": ["./dist/index.js"]
   },
   "license": "MIT",
   "repository": {
