@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "openclaw": "^2026.3.8",
+    "openclaw": "^2026.3.13",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
   },
@@ -36,7 +36,9 @@
   },
   "openclaw": {
     "id": "bitrouter",
-    "extensions": ["./dist/index.js"]
+    "extensions": [
+      "./dist/index.js"
+    ]
   },
   "license": "MIT",
   "repository": {

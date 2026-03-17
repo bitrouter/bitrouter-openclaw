@@ -280,6 +280,32 @@ export type {
   GatewayRequestHandlerOptions,
 } from "openclaw/plugin-sdk";
 
+// ── SDK types for provider discovery & non-interactive auth ──────────
+//
+// These types exist in the SDK's .d.ts files but are not re-exported
+// through the openclaw/plugin-sdk barrel. We define structural
+// equivalents here based on the SDK's declarations.
+
+/**
+ * Non-interactive auth context passed to runNonInteractive on ProviderAuthMethod.
+ *
+ * We type this loosely to avoid coupling to the SDK's internal types.
+ * The handler only uses `resolveApiKey` and `workspaceDir`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ProviderAuthMethodNonInteractiveContext = Record<string, any> & {
+  workspaceDir?: string;
+  resolveApiKey: (params: {
+    provider: string;
+    flagValue?: string;
+    flagName: `--${string}`;
+    envVar: string;
+    envVarName?: string;
+    allowProfile?: boolean;
+    required?: boolean;
+  }) => Promise<{ key: string; source: string; envVarName?: string } | null>;
+};
+
 // ── Locally-defined types matching SDK internals ─────────────────────
 //
 // These types exist in the SDK's .d.ts files but are not re-exported
