@@ -11,7 +11,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && npm run copy-assets",
+    "build": "npm run sync-skills && tsc && npm run copy-assets",
+    "sync-skills": "git -C \"$(git rev-parse --show-toplevel)\" submodule update --remote openclaw/src/skills || true",
     "copy-assets": "cp -r src/skills dist/ && cp openclaw.plugin.json dist/",
     "dev": "tsc --watch",
     "test": "vitest run",

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Route LLM requests through BitRouter — a local multi-provider proxy with failover, load balancing, and unified API key management.",
   "entry": "dist/index.js",
-  "skills": ["skills/bitrouter"],
+  "skills": ["skills/skills/bitrouter"],
   "configSchema": {
     "type": "object",
     "properties": {
