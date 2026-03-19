@@ -43,17 +43,13 @@ function buildDynamicContext(
   config: BitrouterPluginConfig,
   state: BitrouterState
 ): string {
-  if (!state.healthy) {
-    return "[BitRouter: unhealthy]";
-  }
-
   const mode = config.mode ?? "unconfigured";
   const upstream =
     mode === "byok"
       ? `/${config.byok?.upstreamProvider ?? "unknown"}`
-      : mode === "auto"
-        ? ""
-        : "";
+      : "";
+
+  const healthTag = state.healthy ? ", healthy" : "";
 
   const routeCount = state.knownRoutes.length;
   const routeSummary =
@@ -61,7 +57,7 @@ function buildDynamicContext(
       ? state.knownRoutes.map((r) => `${r.model}→${r.provider}`).join(", ")
       : "none";
 
-  return `[BitRouter: ${mode}${upstream}, healthy, ${routeCount} routes (${routeSummary})]`;
+  return `[BitRouter: ${mode}${upstream}${healthTag}, ${routeCount} routes (${routeSummary})]`;
 }
 
 // ── Hook registration ────────────────────────────────────────────────
