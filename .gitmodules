@@ -1,3 +1,0 @@
-[submodule "openclaw/src/skills"]
-	path = openclaw/src/skills
-	url = https://github.com/bitrouter/agent-skills.git

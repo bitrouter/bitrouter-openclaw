@@ -261,6 +261,35 @@ function buildEffectiveConfig(
     };
   }
 
+  // ── Auto mode fallback: build routes from config.providers ──
+  // When detectProviders() found nothing in process.env but the user has
+  // providers configured directly in the plugin config (with literal API
+  // keys), synthesize auto/default routes from those entries.
+  if (
+    config.mode === "auto" &&
+    (!autoDetected || autoDetected.length === 0) &&
+    config.providers &&
+    Object.keys(config.providers).length > 0
+  ) {
+    const configDetected: DetectedProvider[] = Object.entries(config.providers)
+      .filter(([, p]) => p.apiKey)
+      .map(([name, p]) => ({
+        name,
+        envVarKey: toEnvVarKey(name),
+        apiKey: p.apiKey!,
+        apiBase: p.apiBase ?? PROVIDER_API_BASES[name],
+      }));
+
+    if (configDetected.length > 0) {
+      const { providers, models } = buildAutoProviderConfig(configDetected);
+      return {
+        ...config,
+        providers: { ...config.providers, ...providers },
+        models: { ...config.models, ...models },
+      };
+    }
+  }
+
   if (config.mode !== "byok" || !config.byok?.upstreamProvider) {
     return config;
   }
