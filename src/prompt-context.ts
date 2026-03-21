@@ -35,7 +35,13 @@ type BeforePromptBuildResult = {
 const STATIC_CONTEXT = `BitRouter LLM proxy is available. For route management, status, key generation, or admin operations use the /bitrouter skill or the CLI:
   openclaw bitrouter status   — health, routes, daemon info
   openclaw bitrouter setup    — reconfigure provider/mode
-  openclaw bitrouter wallet   — wallet/onboarding state`;
+  openclaw bitrouter wallet   — wallet/onboarding state
+
+IMPORTANT — Model Selection: You have 33 models available at different cost/capability tiers. Before starting a task, actively choose the right model using the /model-select skill. Use \`bitrouter route add <name> openrouter:<model>\` to set task-appropriate routes. Do NOT default to auto/load-balance for every task — pick the cheapest tier that can handle the job well. Quick guide:
+  Frontier ($2-25/M out): claude-opus-4.6, gpt-5.4, gemini-3.1-pro — complex architecture, research
+  Strong ($0.4-15/M out): claude-sonnet-4.6, qwen3-max-thinking, mistral-large-2512 — standard dev work
+  Fast ($0.13-5/M out): claude-haiku-4.5, devstral-2512, gemini-2.5-flash, grok-4.1-fast, gpt-5-mini — simple tasks, high throughput
+  Ultra-cheap ($0.05-0.75/M out): gpt-5-nano, mimo-v2-flash, step-3.5-flash — batch, formatting, triage`;
 
 // ── Dynamic context builder ──────────────────────────────────────────
 

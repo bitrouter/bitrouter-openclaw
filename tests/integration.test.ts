@@ -10,6 +10,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   OpenClawPluginApi,
   BitrouterPluginConfig,
@@ -26,6 +28,27 @@ import { activate } from "../src/index.js";
 // ── Helpers ──────────────────────────────────────────────────────────
 
 const BITROUTER_URL = "http://127.0.0.1:8787";
+const BITROUTER_HOME = join(
+  process.env.HOME ?? "/tmp",
+  ".openclaw",
+  "bitrouter"
+);
+
+/** Read the active API token from BitRouter's key store. */
+function getApiToken(): string | null {
+  try {
+    const activeKeyId = readFileSync(
+      join(BITROUTER_HOME, ".keys", "active"),
+      "utf-8"
+    ).trim();
+    return readFileSync(
+      join(BITROUTER_HOME, ".keys", activeKeyId, "tokens", "plugin.jwt"),
+      "utf-8"
+    ).trim();
+  } catch {
+    return null;
+  }
+}
 
 /** Check if BitRouter is actually running before tests. */
 async function isBitrouterRunning(): Promise<boolean> {
@@ -251,16 +274,15 @@ describe("Integration: plugin against live BitRouter", () => {
       expect(result).toBeUndefined();
     });
 
-    it("model interceptor routes everything in interceptAll mode", async () => {
+    it("model interceptor routes known models even when not in selective config", async () => {
       if (!running) return;
 
-      const config: BitrouterPluginConfig = { interceptAllModels: true };
-      const { api, registrations } = createMockApi(config, "any-random-model");
+      const { api, registrations } = createMockApi({}, "any-random-model");
       const state: BitrouterState = {
         process: null,
         healthy: true,
         baseUrl: BITROUTER_URL,
-        knownRoutes: [],
+        knownRoutes: [{ model: "any-random-model", provider: "openrouter", protocol: "openai" }],
         knownModels: [],
         healthCheckTimer: null,
         homeDir: "/tmp/test",
@@ -337,9 +359,10 @@ describe("Integration: plugin against live BitRouter", () => {
       expect(registrations.providers).toHaveLength(1);
       expect(registrations.providers[0].id).toBe("bitrouter");
 
-      // Hook registered
-      expect(registrations.hooks).toHaveLength(1);
-      expect(registrations.hooks[0].event).toBe("before_model_resolve");
+      // Hooks registered (before_model_resolve + before_prompt_build)
+      expect(registrations.hooks).toHaveLength(2);
+      expect(registrations.hooks.map((h) => h.event)).toContain("before_model_resolve");
+      expect(registrations.hooks.map((h) => h.event)).toContain("before_prompt_build");
     });
   });
 
@@ -388,11 +411,17 @@ describe("Integration: plugin against live BitRouter", () => {
     it("sends a chat completion through BitRouter and gets a response", async () => {
       if (!running) return;
 
+      const token = getApiToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
       const res = await fetch(`${BITROUTER_URL}/v1/chat/completions`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify({
           model: "default",
           max_tokens: 20,
