@@ -1,0 +1,77 @@
+name: On OpenClaw Update
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+jobs:
+  compat-check:
+    name: OpenClaw compatibility check
+    if: >-
+      github.actor == 'dependabot[bot]' &&
+      contains(github.event.pull_request.title, 'openclaw')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Get new openclaw version
+        id: version
+        run: |
+          NEW_VERSION=$(node -e "console.log(require('./node_modules/openclaw/package.json').version)")
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: anomalyco/opencode/github@latest
+        env:
+          BITROUTER_API_KEY: ${{ secrets.BITROUTER_API_KEY }}
+        with:
+          model: bitrouter/kimi-k2.5
+          prompt: |
+            OpenClaw has been updated to version ${{ steps.version.outputs.new_version }}.
+            This is a Dependabot PR: "${{ github.event.pull_request.title }}"
+
+            Check if this plugin is compatible with the new OpenClaw version and fix any issues.
+
+            1. Check for OpenClaw release notes or changelog:
+               - Run: npm view openclaw@${{ steps.version.outputs.new_version }} --json
+               - Look for a CHANGELOG in node_modules/openclaw/ if available
+
+            2. Verify interface compatibility — check each file against the installed openclaw SDK types:
+               - src/types.ts imports from "openclaw/plugin-sdk" — verify all imported types still exist
+               - src/index.ts uses api.registerService(), api.registerProvider(), api.registerCli(),
+                 api.registerHttpRoute(), api.on(), api.pluginConfig, api.config.agents.defaults.model, api.logger
+               - src/service.ts uses OpenClawPluginServiceContext
+               - src/provider.ts uses ProviderAuthContext, ProviderAuthResult
+               - src/routing.ts uses the before_model_resolve hook event and result types
+               - src/prompt-context.ts uses the before_prompt_build hook
+               - src/http-routes.ts uses registerHttpRoute()
+               - Compare against the .d.ts files in node_modules/openclaw/ for any changed or removed exports
+
+            3. Run `npm run build` to check TypeScript compilation. Fix any type errors.
+
+            4. Run `npm test` to verify all tests pass. Fix any failures caused by the update.
+
+            5. If you find breaking changes:
+               - If you can confidently fix the code, do so
+               - If the fix is uncertain, add a TODO comment explaining what needs attention
+               - Update the PR body to flag breaking changes
+
+            6. If no code changes are needed beyond the version bump, comment on the PR:
+               "Verified compatible with openclaw@${{ steps.version.outputs.new_version }}"
+
+            Do NOT auto-merge this PR. A human must review and merge.
+            Do NOT make speculative edits — only fix actual compilation or test failures.
