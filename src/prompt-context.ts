@@ -16,22 +16,27 @@ import type {
   BitrouterState,
   OpenClawPluginApi,
 } from "./types.js";
+import { ALLOWED_COMMANDS_DESCRIPTION } from "./bitrouter-tool.js";
 
 // ── Static context (cacheable across turns) ──────────────────────────
 
-const STATIC_CONTEXT = `BitRouter LLM proxy is available. For route management, status, key generation, or admin operations use the /bitrouter skill or the CLI:
-  openclaw bitrouter status   — health, routes, agents, tools, daemon info
-  openclaw bitrouter agents   — list upstream A2A agents
-  openclaw bitrouter tools    — list available MCP tools and skills
-  openclaw bitrouter setup    — reconfigure provider/mode
-  openclaw bitrouter wallet   — wallet/onboarding state
+const STATIC_CONTEXT = `BitRouter LLM proxy is available. Use the \`bitrouter\` tool for route management, status checks, and administration.
+
+Available tool commands:
+  ${ALLOWED_COMMANDS_DESCRIPTION}
+
+Examples:
+  bitrouter tool → command: "status"
+  bitrouter tool → command: "models list"
+  bitrouter tool → command: "route add fast openai:gpt-4o-mini"
+  bitrouter tool → command: "route add research openai:o3 anthropic:claude-opus-4-20250514 --strategy load_balance"
+  bitrouter tool → command: "route rm fast"
 
 BitRouter also provides:
-  A2A Gateway — proxy upstream agents via /a2a/{agent_name} (message/send, message/stream, tasks/*)
   MCP Gateway — proxy upstream MCP servers via /mcp (tools/list, tools/call, resources/*, prompts/*)
   Skills Registry — manage agent skills via /v1/skills (CRUD) and discover via /v1/tools
 
-IMPORTANT — Model Selection: You have 33 models available at different cost/capability tiers. Before starting a task, actively choose the right model using the /model-select skill. Use \`bitrouter route add <name> openrouter:<model>\` to set task-appropriate routes. Do NOT default to auto/load-balance for every task — pick the cheapest tier that can handle the job well. Quick guide:
+IMPORTANT — Model Selection: Choose the right model for the task. Use \`bitrouter\` tool with "route add <name> openrouter:<model>" to set task-appropriate routes. Do NOT default to auto/load-balance for every task — pick the cheapest tier that can handle the job well. Quick guide:
   Frontier ($2-25/M out): claude-opus-4.6, gpt-5.4, gemini-3.1-pro — complex architecture, research
   Strong ($0.4-15/M out): claude-sonnet-4.6, qwen3-max-thinking, mistral-large-2512 — standard dev work
   Fast ($0.13-5/M out): claude-haiku-4.5, devstral-2512, gemini-2.5-flash, grok-4.1-fast, gpt-5-mini — simple tasks, high throughput
@@ -41,13 +46,11 @@ IMPORTANT — Model Selection: You have 33 models available at different cost/ca
 
 function buildDynamicContext(
   config: BitrouterPluginConfig,
-  state: BitrouterState
+  state: BitrouterState,
 ): string {
   const mode = config.mode ?? "unconfigured";
   const upstream =
-    mode === "byok"
-      ? `/${config.byok?.upstreamProvider ?? "unknown"}`
-      : "";
+    mode === "byok" ? `/${config.byok?.upstreamProvider ?? "unknown"}` : "";
 
   const healthTag = state.healthy ? ", healthy" : "";
 
@@ -65,9 +68,10 @@ function buildDynamicContext(
   if (state.knownAgents.length > 0) {
     const agentSummary = state.knownAgents
       .map((a) => {
-        const skills = a.skills.length > 0
-          ? ` (${a.skills.map((s) => s.name).join(", ")})`
-          : "";
+        const skills =
+          a.skills.length > 0
+            ? ` (${a.skills.map((s) => s.name).join(", ")})`
+            : "";
         return `${a.id}${skills}`;
       })
       .join("; ");
@@ -103,7 +107,7 @@ function buildDynamicContext(
 export function registerPromptContext(
   api: OpenClawPluginApi,
   config: BitrouterPluginConfig,
-  state: BitrouterState
+  state: BitrouterState,
 ): void {
   api.on("before_prompt_build", (_event, _ctx) => {
     return {

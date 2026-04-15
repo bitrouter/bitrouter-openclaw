@@ -34,7 +34,12 @@ import {
 } from "./config.js";
 import { ensureAuthViaCli } from "./bitrouter-cli.js";
 import { startHealthCheck, stopHealthCheck, waitForReady } from "./health.js";
-import { refreshRoutes, refreshAgents, refreshTools, refreshSkills } from "./routing.js";
+import {
+  refreshRoutes,
+  refreshAgents,
+  refreshTools,
+  refreshSkills,
+} from "./routing.js";
 import { resolveBinaryPath } from "./binary.js";
 import { buildAutoProviderConfig, type DetectedProvider } from "./discovery.js";
 import { loadOnboardingState } from "./onboarding.js";
@@ -49,6 +54,7 @@ export function registerBitrouterService(
   config: BitrouterPluginConfig,
   state: BitrouterState,
   stateDirRef: { value: string },
+  onRefresh?: () => void,
 ): void {
   api.registerService({
     id: "bitrouter",
@@ -174,7 +180,7 @@ export function registerBitrouterService(
       }
 
       // 5. Start periodic health checks.
-      startHealthCheck(api, config, state);
+      startHealthCheck(api, config, state, onRefresh);
     },
 
     stop: async (_ctx: OpenClawPluginServiceContext) => {
@@ -373,9 +379,7 @@ function resolveProviderApiBase(
  * them here. The provider:modelId pairs are passed-through as-is
  * (e.g. OpenRouter accepts "auto" as a valid model identifier).
  */
-function buildDefaultModelRoutes(
-  upstreamProvider: string,
-): Record<
+function buildDefaultModelRoutes(upstreamProvider: string): Record<
   string,
   {
     strategy: "priority";

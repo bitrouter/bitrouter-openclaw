@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "description": "Route LLM requests through BitRouter — a local multi-provider proxy with failover, load balancing, and unified API key management.",
   "entry": "dist/index.js",
-  "skills": ["skills/bitrouter"],
+  "skills": [
+    "skills/bitrouter"
+  ],
   "configSchema": {
     "type": "object",
     "properties": {
@@ -69,17 +71,33 @@
           },
           "disabledPatterns": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Built-in patterns to disable (e.g. 'ip_addresses')."
           },
           "upgoing": {
             "type": "object",
-            "additionalProperties": { "type": "string", "enum": ["warn", "redact", "block"] },
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "warn",
+                "redact",
+                "block"
+              ]
+            },
             "description": "Per-pattern action for outbound traffic (user → LLM)."
           },
           "downgoing": {
             "type": "object",
-            "additionalProperties": { "type": "string", "enum": ["warn", "redact", "block"] },
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "warn",
+                "redact",
+                "block"
+              ]
+            },
             "description": "Per-pattern action for inbound traffic (LLM → user)."
           },
           "customPatterns": {
@@ -87,11 +105,26 @@
             "items": {
               "type": "object",
               "properties": {
-                "name": { "type": "string" },
-                "regex": { "type": "string" },
-                "direction": { "type": "string", "enum": ["upgoing", "downgoing", "both"], "default": "upgoing" }
+                "name": {
+                  "type": "string"
+                },
+                "regex": {
+                  "type": "string"
+                },
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "upgoing",
+                    "downgoing",
+                    "both"
+                  ],
+                  "default": "upgoing"
+                }
               },
-              "required": ["name", "regex"]
+              "required": [
+                "name",
+                "regex"
+              ]
             },
             "description": "User-defined regex patterns."
           }
@@ -105,7 +138,10 @@
           "properties": {
             "strategy": {
               "type": "string",
-              "enum": ["priority", "load_balance"],
+              "enum": [
+                "priority",
+                "load_balance"
+              ],
               "default": "priority",
               "description": "'priority' tries endpoints in order with failover. 'load_balance' distributes via round-robin."
             },
@@ -131,11 +167,16 @@
                     "description": "Optional per-endpoint API base URL override."
                   }
                 },
-                "required": ["provider", "modelId"]
+                "required": [
+                  "provider",
+                  "modelId"
+                ]
               }
             }
           },
-          "required": ["endpoints"]
+          "required": [
+            "endpoints"
+          ]
         }
       },
       "solanaRpcUrl": {
@@ -168,7 +209,9 @@
             },
             "headers": {
               "type": "object",
-              "additionalProperties": { "type": "string" },
+              "additionalProperties": {
+                "type": "string"
+              },
               "description": "Custom headers to send to the upstream agent."
             },
             "cardPath": {
@@ -176,7 +219,10 @@
               "description": "Optional local path to cache the agent card."
             }
           },
-          "required": ["name", "url"]
+          "required": [
+            "name",
+            "url"
+          ]
         }
       },
       "a2aAgentPricing": {
@@ -185,10 +231,15 @@
         "additionalProperties": {
           "type": "object",
           "properties": {
-            "defaultCostPerCall": { "type": "number", "description": "Default cost per method call." },
+            "defaultCostPerCall": {
+              "type": "number",
+              "description": "Default cost per method call."
+            },
             "overrides": {
               "type": "object",
-              "additionalProperties": { "type": "number" },
+              "additionalProperties": {
+                "type": "number"
+              },
               "description": "Per-method cost overrides (e.g. 'message/send': 0.002)."
             }
           }
@@ -210,14 +261,26 @@
             },
             "args": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "Arguments for the server command."
             },
             "toolFilter": {
               "type": "object",
               "properties": {
-                "allow": { "type": "array", "items": { "type": "string" } },
-                "deny": { "type": "array", "items": { "type": "string" } }
+                "allow": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "deny": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
               },
               "description": "Allow/deny list for tool names."
             },
@@ -229,17 +292,29 @@
                   "items": {
                     "type": "object",
                     "properties": {
-                      "tool": { "type": "string" },
-                      "forbiddenParams": { "type": "array", "items": { "type": "string" } }
+                      "tool": {
+                        "type": "string"
+                      },
+                      "forbiddenParams": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
                     },
-                    "required": ["tool"]
+                    "required": [
+                      "tool"
+                    ]
                   }
                 }
               },
               "description": "Per-tool parameter restrictions."
             }
           },
-          "required": ["name", "command"]
+          "required": [
+            "name",
+            "command"
+          ]
         }
       },
       "mcpGroups": {
@@ -247,7 +322,9 @@
         "description": "Named groups of MCP servers for access control.",
         "additionalProperties": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       },
       "mcpServerPricing": {
@@ -256,10 +333,15 @@
         "additionalProperties": {
           "type": "object",
           "properties": {
-            "defaultCostPerCall": { "type": "number", "description": "Default cost per tool call." },
+            "defaultCostPerCall": {
+              "type": "number",
+              "description": "Default cost per tool call."
+            },
             "overrides": {
               "type": "object",
-              "additionalProperties": { "type": "number" },
+              "additionalProperties": {
+                "type": "number"
+              },
               "description": "Per-tool cost overrides."
             }
           }
@@ -271,27 +353,47 @@
         "items": {
           "type": "object",
           "properties": {
-            "name": { "type": "string", "description": "Skill name." },
-            "description": { "type": "string", "description": "Skill description." },
-            "source": { "type": "string", "description": "Optional source URL." },
+            "name": {
+              "type": "string",
+              "description": "Skill name."
+            },
+            "description": {
+              "type": "string",
+              "description": "Skill description."
+            },
+            "source": {
+              "type": "string",
+              "description": "Optional source URL."
+            },
             "requiredApis": {
               "type": "array",
               "items": {
                 "type": "object",
                 "properties": {
-                  "provider": { "type": "string" }
+                  "provider": {
+                    "type": "string"
+                  }
                 },
-                "required": ["provider"]
+                "required": [
+                  "provider"
+                ]
               },
               "description": "APIs required by this skill."
             }
           },
-          "required": ["name", "description"]
+          "required": [
+            "name",
+            "description"
+          ]
         }
       },
       "mode": {
         "type": "string",
-        "enum": ["byok", "cloud", "auto"],
+        "enum": [
+          "byok",
+          "cloud",
+          "auto"
+        ],
         "description": "Setup mode. 'auto' = detected from environment variables. 'byok' = bring your own API key (wizard). 'cloud' = Swig wallet for x402 payments. Unset = not yet configured and no env vars found."
       },
       "byok": {
@@ -307,12 +409,19 @@
             "description": "Custom API base URL. Defaults to the provider's public URL."
           }
         },
-        "required": ["upstreamProvider"]
+        "required": [
+          "upstreamProvider"
+        ]
       }
     }
   },
   "providerAuthEnvVars": {
-    "bitrouter": ["BITROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]
+    "bitrouter": [
+      "BITROUTER_API_KEY",
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "OPENROUTER_API_KEY"
+    ]
   },
   "providerAuthChoices": [
     {
@@ -340,6 +449,34 @@
       "cliDescription": "Upstream provider API key for BYOK mode"
     }
   ],
+  "modelSupport": {
+    "modelPrefixes": [
+      "bitrouter/"
+    ]
+  },
+  "activation": {
+    "onProviders": [
+      "bitrouter"
+    ],
+    "onCapabilities": [
+      "provider",
+      "tool"
+    ]
+  },
+  "setup": {
+    "providers": [
+      {
+        "id": "bitrouter",
+        "label": "BitRouter",
+        "hint": "Local multi-provider LLM proxy with failover and load balancing"
+      }
+    ]
+  },
+  "contracts": {
+    "tools": [
+      "bitrouter"
+    ]
+  },
   "uiHints": {
     "icon": "router",
     "category": "infrastructure",

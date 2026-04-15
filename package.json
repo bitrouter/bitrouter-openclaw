@@ -39,7 +39,9 @@
     ],
     "providers": [
       "bitrouter"
-    ]
+    ],
+    "compat": ">=2026.3.24",
+    "build": "pnpm run build"
   },
   "license": "MIT",
   "repository": {
