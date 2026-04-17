@@ -34,7 +34,12 @@ import {
 } from "./config.js";
 import { ensureAuthViaCli } from "./bitrouter-cli.js";
 import { startHealthCheck, stopHealthCheck, waitForReady } from "./health.js";
-import { refreshRoutes, refreshAgents, refreshTools, refreshSkills } from "./routing.js";
+import {
+  refreshRoutes,
+  refreshAgents,
+  refreshTools,
+  refreshSkills,
+} from "./routing.js";
 import { resolveBinaryPath } from "./binary.js";
 import { buildAutoProviderConfig, type DetectedProvider } from "./discovery.js";
 import { loadOnboardingState } from "./onboarding.js";
@@ -49,6 +54,7 @@ export function registerBitrouterService(
   config: BitrouterPluginConfig,
   state: BitrouterState,
   stateDirRef: { value: string },
+  onRefresh?: () => void,
 ): void {
   api.registerService({
     id: "bitrouter",
@@ -88,15 +94,17 @@ export function registerBitrouterService(
       // Load onboarding state from onboarding.json (written by Rust CLI).
       state.onboardingState = loadOnboardingState(state.homeDir);
 
-      // Ensure a bitrouter account exists and mint JWTs for authenticating
-      // with the local BitRouter instance (API + admin scopes).
+      // Ensure an OWS wallet exists and mint a JWT for authenticating
+      // with the local BitRouter instance.
       try {
-        const tokens = await ensureAuthViaCli(ctx.stateDir, state.homeDir);
-        state.apiToken = tokens.apiToken;
-        state.adminToken = tokens.adminToken;
-        api.logger.info("Auth tokens ready (via bitrouter CLI)");
+        const { apiToken } = await ensureAuthViaCli(
+          ctx.stateDir,
+          state.homeDir,
+        );
+        state.apiToken = apiToken;
+        api.logger.info("Auth token ready (via bitrouter CLI)");
       } catch (err) {
-        api.logger.warn(`Failed to generate auth tokens: ${err}`);
+        api.logger.warn(`Failed to generate auth token: ${err}`);
       }
 
       // 2. Find the binary (downloads from GitHub releases if not cached).
@@ -174,7 +182,7 @@ export function registerBitrouterService(
       }
 
       // 5. Start periodic health checks.
-      startHealthCheck(api, config, state);
+      startHealthCheck(api, config, state, onRefresh);
     },
 
     stop: async (_ctx: OpenClawPluginServiceContext) => {
@@ -373,9 +381,7 @@ function resolveProviderApiBase(
  * them here. The provider:modelId pairs are passed-through as-is
  * (e.g. OpenRouter accepts "auto" as a valid model identifier).
  */
-function buildDefaultModelRoutes(
-  upstreamProvider: string,
-): Record<
+function buildDefaultModelRoutes(upstreamProvider: string): Record<
   string,
   {
     strategy: "priority";

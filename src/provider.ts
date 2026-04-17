@@ -2,22 +2,16 @@
  * Provider registration — registers "bitrouter" as an LLM provider in
  * OpenClaw, pointing to the local BitRouter instance.
  *
- * Three auth methods are offered:
+ * Auth method:
  *
- *   byok  — Bring Your Own Key: interactive wizard that collects an
- *            upstream provider (OpenRouter, OpenAI, Anthropic, or custom)
- *            and an API key. Persists mode + byok config via configPatch.
- *
- *   cloud — BitRouter Cloud stub (coming soon). Shows a "coming soon"
- *            message and exits without making changes.
- *
- *   byok (non-interactive) — Headless/CI flow that detects API keys
- *            from environment variables and auto-configures BitRouter.
+ *   byok  — Delegates to `bitrouter auth login` via the native CLI
+ *            (system binary on PATH or plugin's bundled copy). The CLI
+ *            handles provider selection, API key entry, and OAuth flows.
+ *            A non-interactive path detects API keys from env vars for
+ *            headless/CI environments.
  *
  * The wizard is triggered by:
  *   openclaw models auth login --provider bitrouter
- *   openclaw models auth login --provider bitrouter --method byok
- *   openclaw models auth login --provider bitrouter --method cloud
  *
  * Provider features:
  *   - discovery: publishes BitRouter's routing table into the model catalog
@@ -32,11 +26,12 @@ import type {
   ProviderAuthMethodNonInteractiveContext,
 } from "./types.js";
 import { DEFAULTS } from "./types.js";
-import { byokWizard, cloudSetupHint } from "./setup.js";
+import { byokWizard } from "./setup.js";
 import { buildCatalogHandler } from "./discovery.js";
 import { PROVIDER_API_BASES, toEnvVarKey } from "./config.js";
 import { ensureAuthViaCli } from "./bitrouter-cli.js";
 import { detectProviders } from "./discovery.js";
+import { fetchMetrics, formatUsageText } from "./usage.js";
 
 // ── Non-interactive auth ──────────────────────────────────────────────
 
@@ -51,7 +46,7 @@ import { detectProviders } from "./discovery.js";
  */
 async function byokNonInteractive(
   ctx: ProviderAuthMethodNonInteractiveContext,
-  api: OpenClawPluginApi
+  api: OpenClawPluginApi,
 ): Promise<Record<string, unknown> | null> {
   // Try to resolve a BitRouter-specific API key first (for pre-configured setups).
   const resolved = await ctx.resolveApiKey({
@@ -94,7 +89,7 @@ async function byokNonInteractive(
   const detected = detectProviders(api);
   if (detected.length === 0) {
     api.logger.info(
-      "BitRouter non-interactive auth: no API keys found in environment"
+      "BitRouter non-interactive auth: no API keys found in environment",
     );
     return null;
   }
@@ -111,14 +106,13 @@ async function byokNonInteractive(
 
   api.logger.info(
     `BitRouter non-interactive auth: auto-configuring with ${primary.name} ` +
-      `(${primary.envVarKey})`
+      `(${primary.envVarKey})`,
   );
 
   // Generate JWT for authenticating with local BitRouter.
-  const homeDir =
-    ctx.workspaceDir
-      ? `${ctx.workspaceDir}/bitrouter`
-      : `${process.env.HOME}/.openclaw/bitrouter`;
+  const homeDir = ctx.workspaceDir
+    ? `${ctx.workspaceDir}/bitrouter`
+    : `${process.env.HOME}/.openclaw/bitrouter`;
 
   const stateDir = ctx.workspaceDir
     ? `${ctx.workspaceDir}/plugins/bitrouter`
@@ -130,7 +124,7 @@ async function byokNonInteractive(
   // If multiple providers detected, use auto mode instead of byok.
   if (detected.length > 1) {
     api.logger.info(
-      `BitRouter non-interactive auth: ${detected.length} providers detected, using auto mode`
+      `BitRouter non-interactive auth: ${detected.length} providers detected, using auto mode`,
     );
     return {
       plugins: {
@@ -197,7 +191,7 @@ async function byokNonInteractive(
 export function registerBitrouterProvider(
   api: OpenClawPluginApi,
   _config: BitrouterPluginConfig,
-  state: BitrouterState
+  state: BitrouterState,
 ): void {
   // Collect env var names for all well-known providers.
   const envVars = [
@@ -215,8 +209,8 @@ export function registerBitrouterProvider(
     auth: [
       {
         id: "byok",
-        label: "BYOK — bring your own API key",
-        hint: "Route through OpenRouter, OpenAI, Anthropic, or any compatible API",
+        label: "Set up BitRouter provider authentication",
+        hint: "Runs `bitrouter auth login` to configure providers (API keys, OAuth, etc.)",
         kind: "api_key" as const,
         run: byokWizard,
 
@@ -224,14 +218,10 @@ export function registerBitrouterProvider(
         // Detects API keys from environment variables and auto-configures.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         runNonInteractive: (ctx: any) =>
-          byokNonInteractive(ctx as ProviderAuthMethodNonInteractiveContext, api),
-      },
-      {
-        id: "cloud",
-        label: "BitRouter Cloud (wallet setup)",
-        hint: "Set up Swig wallet for x402 payments via interactive CLI",
-        kind: "oauth" as const,
-        run: cloudSetupHint,
+          byokNonInteractive(
+            ctx as ProviderAuthMethodNonInteractiveContext,
+            api,
+          ),
       },
     ],
 
@@ -265,7 +255,7 @@ export function registerBitrouterProvider(
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: knownModel?.context_window ?? 128_000,
         maxTokens: knownModel?.max_tokens ?? 16_384,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any;
     },
 
@@ -285,6 +275,55 @@ export function registerBitrouterProvider(
         return (cred as { key: string }).key;
       }
       return state.apiToken ?? "";
+    },
+
+    // ── Usage & spend tracking ─────────────────────────────────────
+
+    // Resolve auth for usage endpoints — use the local JWT token.
+    resolveUsageAuth: async () => {
+      const token = state.apiToken;
+      if (!token) return null;
+      return { token };
+    },
+
+    // Fetch usage/spend snapshot from BitRouter's /v1/metrics endpoint.
+    fetchUsageSnapshot: async () => {
+      const metrics = await fetchMetrics(state);
+      if (!metrics) return null;
+
+      const text = formatUsageText(metrics);
+      const totalRequests = Object.values(metrics.routes).reduce(
+        (sum, r) => sum + r.total_requests,
+        0,
+      );
+
+      // Return a provider-compatible snapshot shape.
+      // Since "bitrouter" isn't in the core UsageProviderId union,
+      // we return the data through the generic provider surface.
+      return {
+        provider: "bitrouter",
+        displayName: "BitRouter",
+        windows: [
+          {
+            label: `${totalRequests} requests across ${Object.keys(metrics.routes).length} routes`,
+            usedPercent: 0,
+          },
+        ],
+        plan: text,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any;
+    },
+
+    // ── Auth guidance ──────────────────────────────────────────────
+
+    // Custom missing-auth message for BitRouter.
+    buildMissingAuthMessage: () => {
+      return (
+        "BitRouter is not authenticated. Run one of:\n" +
+        "  openclaw bitrouter setup        — interactive onboarding wizard\n" +
+        "  openclaw models auth login --provider bitrouter  — configure auth\n" +
+        "  export BITROUTER_API_KEY=...    — set API key directly"
+      );
     },
   });
 }

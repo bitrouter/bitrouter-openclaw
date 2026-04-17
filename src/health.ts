@@ -13,7 +13,13 @@ import type {
   OpenClawPluginApi,
 } from "./types.js";
 import { DEFAULTS } from "./types.js";
-import { refreshRoutes, refreshModels, refreshAgents, refreshTools, refreshSkills } from "./routing.js";
+import {
+  refreshRoutes,
+  refreshModels,
+  refreshAgents,
+  refreshTools,
+  refreshSkills,
+} from "./routing.js";
 import { detectProviders } from "./discovery.js";
 
 // ── Single health check ──────────────────────────────────────────────
@@ -50,11 +56,15 @@ export async function checkHealth(state: BitrouterState): Promise<boolean> {
 /**
  * Start the health check interval. Updates state.healthy and
  * periodically refreshes the routing table.
+ *
+ * @param onRefresh - Optional callback invoked after each tool/skill refresh
+ *                    cycle (e.g. to sync MCP tool bridge registrations).
  */
 export function startHealthCheck(
   api: OpenClawPluginApi,
   config: BitrouterPluginConfig,
   state: BitrouterState,
+  onRefresh?: () => void,
 ): void {
   let tickCount = 0;
   const interval =
@@ -73,6 +83,7 @@ export function startHealthCheck(
       await refreshAgents(state, api);
       await refreshTools(state, api);
       await refreshSkills(state, api);
+      onRefresh?.();
     } else if (!isHealthy && wasHealthy) {
       api.logger.warn("BitRouter health check failed");
     }
@@ -88,6 +99,7 @@ export function startHealthCheck(
       await refreshAgents(state, api);
       await refreshTools(state, api);
       await refreshSkills(state, api);
+      onRefresh?.();
 
       // In auto mode, re-scan for provider changes at the same cadence.
       if (config.mode === "auto") {

@@ -43,12 +43,24 @@ import { DEFAULTS } from "./types.js";
 import { resolveHomeDir } from "./config.js";
 import { registerBitrouterService } from "./service.js";
 import { registerBitrouterProvider } from "./provider.js";
-import { registerModelInterceptor, refreshAgents, refreshTools, refreshSkills } from "./routing.js";
+import {
+  registerModelInterceptor,
+  refreshAgents,
+  refreshTools,
+  refreshSkills,
+} from "./routing.js";
 import { registerPromptContext } from "./prompt-context.js";
 import { registerHttpRoutes } from "./http-routes.js";
-import { loadOnboardingState, isOnboardingComplete, needsOnboarding } from "./onboarding.js";
-import { resolveBinaryPath } from "./binary.js";
+import {
+  loadOnboardingState,
+  isOnboardingComplete,
+  needsOnboarding,
+} from "./onboarding.js";
+import { resolveBinaryPath, findSystemBinary } from "./binary.js";
 import { switchAll, restoreModels } from "./switch.js";
+import { createBitrouterTool } from "./bitrouter-tool.js";
+import { createBitrouterInstallTool } from "./bitrouter-install-tool.js";
+import { createMcpToolsBridge } from "./mcp-tools.js";
 
 /**
  * Plugin activation — called by OpenClaw when the plugin is loaded.
@@ -63,7 +75,9 @@ export function activate(api: OpenClawPluginApi): void {
 
   // Mutable ref for stateDir — set when the service's start(ctx) fires.
   // Fallback covers provider/CLI registration that happens before service start.
-  const stateDirRef = { value: `${process.env.HOME}/.openclaw/plugins/bitrouter` };
+  const stateDirRef = {
+    value: `${process.env.HOME}/.openclaw/plugins/bitrouter`,
+  };
 
   // Shared mutable state — passed by reference to all sub-modules.
   const state: BitrouterState = {
@@ -79,7 +93,6 @@ export function activate(api: OpenClawPluginApi): void {
     homeDir: resolveHomeDir(stateDirRef.value),
     metrics: null,
     apiToken: null,
-    adminToken: null,
     onboardingState: null,
   };
 
@@ -94,245 +107,344 @@ export function activate(api: OpenClawPluginApi): void {
     api.logger.error(`Failed to register BitRouter provider: ${err}`);
   }
 
-  // ── Register CLI subcommands ────────────────────────────────────────
+  // ── Register the unified `bitrouter` agent tool ─────────────────────
+  //
+  // One required tool that dispatches safe CLI subcommands. The LLM uses
+  // this to inspect routes, manage dynamic routes, list models/tools, etc.
   try {
-    api.registerCli(
-      ({ program }: { program: unknown }) => {
-        const prog = program as {
-          command(s: string): {
-            description(s: string): {
-              action(fn: () => void | Promise<void>): unknown;
+    api.registerTool(createBitrouterTool(state, stateDirRef), {
+      name: "bitrouter",
+    });
+  } catch (err) {
+    api.logger.error(`Failed to register BitRouter tool: ${err}`);
+  }
+
+  // Dedicated installer tool — split out so the model gets a strong nudge
+  // to call it first when the system binary is missing.
+  try {
+    api.registerTool(createBitrouterInstallTool(), {
+      name: "bitrouter_install",
+    });
+  } catch (err) {
+    api.logger.error(`Failed to register BitRouter install tool: ${err}`);
+  }
+
+  // ── Register MCP tools bridge ───────────────────────────────────────
+  //
+  // Exposes BitRouter's upstream MCP tools as optional OpenClaw agent tools.
+  // Tools are discovered lazily once BitRouter is healthy.
+  const mcpBridge = createMcpToolsBridge(api, state);
+  try {
+    mcpBridge.registerInitialTools();
+  } catch (err) {
+    api.logger.warn(`Failed to register initial MCP tools: ${err}`);
+  }
+
+  // ── Register CLI subcommands ────────────────────────────────────────
+  //
+  // If the user already has the `bitrouter` binary on PATH, OpenClaw
+  // exposes it as a top-level command. Registering plugin subcommands
+  // would collide with the system binary, so we skip in that case.
+  const systemBinary = findSystemBinary();
+  if (systemBinary) {
+    api.logger.info(
+      `System bitrouter binary found at ${systemBinary} — ` +
+        "skipping plugin CLI registration (use the native CLI directly)",
+    );
+  } else {
+    try {
+      api.registerCli(
+        ({ program }: { program: unknown }) => {
+          const prog = program as {
+            command(s: string): {
+              description(s: string): {
+                action(fn: () => void | Promise<void>): unknown;
+              };
             };
           };
-        };
 
-        // openclaw bitrouter setup — spawn `bitrouter init` interactively
-        prog
-          .command("bitrouter setup")
-          .description("Set up BitRouter wallet and onboarding via interactive CLI")
-          .action(async () => {
-            if (!process.stdin.isTTY) {
-              console.log(
-                "\nBitRouter setup requires an interactive terminal.\n" +
-                  "Run this command directly in your terminal (not piped).\n"
+          // openclaw bitrouter setup — spawn `bitrouter init` interactively
+          prog
+            .command("bitrouter setup")
+            .description(
+              "Set up BitRouter wallet and onboarding via interactive CLI",
+            )
+            .action(async () => {
+              if (!process.stdin.isTTY) {
+                console.log(
+                  "\nBitRouter setup requires an interactive terminal.\n" +
+                    "Run this command directly in your terminal (not piped).\n",
+                );
+                return;
+              }
+
+              let binaryPath: string;
+              try {
+                binaryPath = await resolveBinaryPath(stateDirRef.value);
+              } catch (err) {
+                console.error(`\nFailed to resolve BitRouter binary: ${err}\n`);
+                return;
+              }
+
+              console.log("\nLaunching BitRouter onboarding wizard...\n");
+              const result = spawnSync(
+                binaryPath,
+                ["--home-dir", state.homeDir, "init"],
+                {
+                  stdio: "inherit",
+                },
               );
-              return;
-            }
 
-            let binaryPath: string;
-            try {
-              binaryPath = await resolveBinaryPath(stateDirRef.value);
-            } catch (err) {
-              console.error(`\nFailed to resolve BitRouter binary: ${err}\n`);
-              return;
-            }
+              if (result.status !== 0) {
+                console.error(
+                  `\nBitRouter init exited with code ${result.status}.` +
+                    (result.error ? ` Error: ${result.error.message}` : "") +
+                    "\n",
+                );
+                return;
+              }
 
-            console.log("\nLaunching BitRouter onboarding wizard...\n");
-            const result = spawnSync(binaryPath, ["--home-dir", state.homeDir, "init"], {
-              stdio: "inherit",
+              // Read onboarding state after completion.
+              const onboarding = loadOnboardingState(state.homeDir);
+              if (onboarding && isOnboardingComplete(onboarding)) {
+                console.log(
+                  `\nOnboarding complete (${onboarding.status}).` +
+                    "\nRestart the gateway to activate: openclaw gateway restart\n",
+                );
+              } else {
+                console.log(
+                  "\nOnboarding did not complete. You can re-run: openclaw bitrouter setup\n",
+                );
+              }
             });
 
-            if (result.status !== 0) {
-              console.error(
-                `\nBitRouter init exited with code ${result.status}.` +
-                  (result.error ? ` Error: ${result.error.message}` : "") +
-                  "\n"
-              );
-              return;
-            }
+          // openclaw bitrouter wallet — show wallet/onboarding info
+          prog
+            .command("bitrouter wallet")
+            .description("Show BitRouter wallet and onboarding state")
+            .action(() => {
+              const onboarding = loadOnboardingState(state.homeDir);
+              if (!onboarding) {
+                console.log(
+                  "\nNo onboarding state found. Run: openclaw bitrouter setup\n",
+                );
+                return;
+              }
+              console.log("\nBitRouter Onboarding State:");
+              console.log(JSON.stringify(onboarding, null, 2));
+              console.log();
+            });
 
-            // Read onboarding state after completion.
-            const onboarding = loadOnboardingState(state.homeDir);
-            if (onboarding && isOnboardingComplete(onboarding)) {
+          // openclaw bitrouter status — overview of plugin state
+          prog
+            .command("bitrouter status")
+            .description(
+              "Show BitRouter plugin status, daemon health, and wallet info",
+            )
+            .action(() => {
+              const sections: string[] = ["\nBitRouter Status:"];
+
+              // Onboarding
+              const onboarding = loadOnboardingState(state.homeDir);
+              sections.push(
+                `  Onboarding: ${onboarding?.status ?? "not found"}`,
+              );
+
+              // Daemon health
+              sections.push(
+                `  Daemon: ${state.healthy ? "healthy" : "unhealthy"}`,
+              );
+              sections.push(`  URL: ${state.baseUrl}`);
+
+              // Routes
+              sections.push(`  Routes: ${state.knownRoutes.length} known`);
+              for (const r of state.knownRoutes) {
+                sections.push(`    ${r.model} → ${r.provider} (${r.protocol})`);
+              }
+
+              // Agents
+              sections.push(
+                `  A2A Agents: ${state.knownAgents.length} upstream`,
+              );
+              for (const a of state.knownAgents) {
+                const skills =
+                  a.skills.length > 0
+                    ? ` (${a.skills.map((s) => s.name).join(", ")})`
+                    : "";
+                sections.push(`    ${a.id}${skills}`);
+              }
+
+              // Tools & Skills
+              const mcpTools = state.knownTools.filter(
+                (t) => t.provider !== "skill",
+              );
+              const skillTools = state.knownTools.filter(
+                (t) => t.provider === "skill",
+              );
+              sections.push(
+                `  MCP Tools: ${mcpTools.length}, Skills: ${skillTools.length}`,
+              );
+
+              // Wallet info
+              if (onboarding?.wallet_address) {
+                sections.push(`  Wallet: ${onboarding.wallet_address}`);
+              }
+              if (onboarding?.swig_id) {
+                sections.push(`  Swig ID: ${onboarding.swig_id}`);
+              }
+              if (onboarding?.agent_wallets?.length) {
+                sections.push(
+                  `  Agent wallets: ${onboarding.agent_wallets.length}`,
+                );
+                for (const aw of onboarding.agent_wallets) {
+                  sections.push(
+                    `    ${aw.label}: ${aw.address} (role ${aw.role_id})`,
+                  );
+                }
+              }
+
+              console.log(sections.join("\n") + "\n");
+            });
+
+          // openclaw bitrouter switch-all — rewrite agent models to bitrouter/
+          prog
+            .command("bitrouter switch-all")
+            .description(
+              "Rewrite all agent model configs to route through BitRouter",
+            )
+            .action(async () => {
+              const result = await switchAll(api, config, state);
+              if (result.error) {
+                console.error(`\nError: ${result.error}\n`);
+                return;
+              }
+              console.log("\nSwitched agent models to BitRouter:");
+              for (const line of result.changes) {
+                console.log(line);
+              }
               console.log(
-                `\nOnboarding complete (${onboarding.status}).` +
-                  "\nRestart the gateway to activate: openclaw gateway restart\n"
+                "\nRestart the gateway to apply: openclaw gateway restart\n",
               );
-            } else {
+            });
+
+          // openclaw bitrouter restore-models — restore original agent models
+          prog
+            .command("bitrouter restore-models")
+            .description("Restore agent model configs to their original values")
+            .action(async () => {
+              const result = await restoreModels(api, config);
+              if (result.error) {
+                console.error(`\nError: ${result.error}\n`);
+                return;
+              }
+              console.log("\nRestored original agent models:");
+              for (const line of result.changes) {
+                console.log(line);
+              }
               console.log(
-                "\nOnboarding did not complete. You can re-run: openclaw bitrouter setup\n"
+                "\nRestart the gateway to apply: openclaw gateway restart\n",
               );
-            }
-          });
+            });
 
-        // openclaw bitrouter wallet — show wallet/onboarding info
-        prog
-          .command("bitrouter wallet")
-          .description("Show BitRouter wallet and onboarding state")
-          .action(() => {
-            const onboarding = loadOnboardingState(state.homeDir);
-            if (!onboarding) {
-              console.log("\nNo onboarding state found. Run: openclaw bitrouter setup\n");
-              return;
-            }
-            console.log("\nBitRouter Onboarding State:");
-            console.log(JSON.stringify(onboarding, null, 2));
-            console.log();
-          });
-
-        // openclaw bitrouter status — overview of plugin state
-        prog
-          .command("bitrouter status")
-          .description("Show BitRouter plugin status, daemon health, and wallet info")
-          .action(() => {
-            const sections: string[] = ["\nBitRouter Status:"];
-
-            // Onboarding
-            const onboarding = loadOnboardingState(state.homeDir);
-            sections.push(
-              `  Onboarding: ${onboarding?.status ?? "not found"}`
-            );
-
-            // Daemon health
-            sections.push(`  Daemon: ${state.healthy ? "healthy" : "unhealthy"}`);
-            sections.push(`  URL: ${state.baseUrl}`);
-
-            // Routes
-            sections.push(`  Routes: ${state.knownRoutes.length} known`);
-            for (const r of state.knownRoutes) {
-              sections.push(`    ${r.model} → ${r.provider} (${r.protocol})`);
-            }
-
-            // Agents
-            sections.push(`  A2A Agents: ${state.knownAgents.length} upstream`);
-            for (const a of state.knownAgents) {
-              const skills = a.skills.length > 0
-                ? ` (${a.skills.map((s) => s.name).join(", ")})`
-                : "";
-              sections.push(`    ${a.id}${skills}`);
-            }
-
-            // Tools & Skills
-            const mcpTools = state.knownTools.filter((t) => t.provider !== "skill");
-            const skillTools = state.knownTools.filter((t) => t.provider === "skill");
-            sections.push(`  MCP Tools: ${mcpTools.length}, Skills: ${skillTools.length}`);
-
-            // Wallet info
-            if (onboarding?.wallet_address) {
-              sections.push(`  Wallet: ${onboarding.wallet_address}`);
-            }
-            if (onboarding?.swig_id) {
-              sections.push(`  Swig ID: ${onboarding.swig_id}`);
-            }
-            if (onboarding?.agent_wallets?.length) {
-              sections.push(`  Agent wallets: ${onboarding.agent_wallets.length}`);
-              for (const aw of onboarding.agent_wallets) {
-                sections.push(`    ${aw.label}: ${aw.address} (role ${aw.role_id})`);
+          // openclaw bitrouter agents — list upstream A2A agents
+          prog
+            .command("bitrouter agents")
+            .description("List upstream A2A agents proxied through BitRouter")
+            .action(async () => {
+              if (!state.healthy) {
+                console.log(
+                  "\nBitRouter is not healthy. Start the gateway first.\n",
+                );
+                return;
               }
-            }
-
-            console.log(sections.join("\n") + "\n");
-          });
-
-        // openclaw bitrouter switch-all — rewrite agent models to bitrouter/
-        prog
-          .command("bitrouter switch-all")
-          .description("Rewrite all agent model configs to route through BitRouter")
-          .action(async () => {
-            const result = await switchAll(api, config, state);
-            if (result.error) {
-              console.error(`\nError: ${result.error}\n`);
-              return;
-            }
-            console.log("\nSwitched agent models to BitRouter:");
-            for (const line of result.changes) {
-              console.log(line);
-            }
-            console.log("\nRestart the gateway to apply: openclaw gateway restart\n");
-          });
-
-        // openclaw bitrouter restore-models — restore original agent models
-        prog
-          .command("bitrouter restore-models")
-          .description("Restore agent model configs to their original values")
-          .action(async () => {
-            const result = await restoreModels(api, config);
-            if (result.error) {
-              console.error(`\nError: ${result.error}\n`);
-              return;
-            }
-            console.log("\nRestored original agent models:");
-            for (const line of result.changes) {
-              console.log(line);
-            }
-            console.log("\nRestart the gateway to apply: openclaw gateway restart\n");
-          });
-
-        // openclaw bitrouter agents — list upstream A2A agents
-        prog
-          .command("bitrouter agents")
-          .description("List upstream A2A agents proxied through BitRouter")
-          .action(async () => {
-            if (!state.healthy) {
-              console.log("\nBitRouter is not healthy. Start the gateway first.\n");
-              return;
-            }
-            await refreshAgents(state, api);
-            if (state.knownAgents.length === 0) {
-              console.log("\nNo upstream A2A agents configured.\n");
-              console.log("Configure agents in openclaw.json under plugins.entries.bitrouter.config.a2aAgents\n");
-              return;
-            }
-            console.log(`\nUpstream A2A Agents (${state.knownAgents.length}):\n`);
-            for (const agent of state.knownAgents) {
-              const streaming = agent.streaming ? " [streaming]" : "";
-              console.log(`  ${agent.id}${streaming}`);
-              if (agent.description) console.log(`    ${agent.description}`);
-              if (agent.skills.length > 0) {
-                console.log(`    Skills: ${agent.skills.map((s) => s.name).join(", ")}`);
+              await refreshAgents(state, api);
+              if (state.knownAgents.length === 0) {
+                console.log("\nNo upstream A2A agents configured.\n");
+                console.log(
+                  "Configure agents in openclaw.json under plugins.entries.bitrouter.config.a2aAgents\n",
+                );
+                return;
               }
-              if (agent.input_modes.length > 0) {
-                console.log(`    Input: ${agent.input_modes.join(", ")}  Output: ${agent.output_modes.join(", ")}`);
+              console.log(
+                `\nUpstream A2A Agents (${state.knownAgents.length}):\n`,
+              );
+              for (const agent of state.knownAgents) {
+                const streaming = agent.streaming ? " [streaming]" : "";
+                console.log(`  ${agent.id}${streaming}`);
+                if (agent.description) console.log(`    ${agent.description}`);
+                if (agent.skills.length > 0) {
+                  console.log(
+                    `    Skills: ${agent.skills.map((s) => s.name).join(", ")}`,
+                  );
+                }
+                if (agent.input_modes.length > 0) {
+                  console.log(
+                    `    Input: ${agent.input_modes.join(", ")}  Output: ${agent.output_modes.join(", ")}`,
+                  );
+                }
               }
-            }
-            console.log();
-          });
+              console.log();
+            });
 
-        // openclaw bitrouter tools — list MCP tools and skills
-        prog
-          .command("bitrouter tools")
-          .description("List MCP tools and registered skills available through BitRouter")
-          .action(async () => {
-            if (!state.healthy) {
-              console.log("\nBitRouter is not healthy. Start the gateway first.\n");
-              return;
-            }
-            await refreshTools(state, api);
-            await refreshSkills(state, api);
-
-            if (state.knownTools.length === 0) {
-              console.log("\nNo tools or skills registered.\n");
-              console.log("Configure MCP servers in openclaw.json under plugins.entries.bitrouter.config.mcpServers");
-              console.log("Configure skills under plugins.entries.bitrouter.config.skills\n");
-              return;
-            }
-
-            const mcpTools = state.knownTools.filter((t) => t.provider !== "skill");
-            const skillEntries = state.knownTools.filter((t) => t.provider === "skill");
-
-            if (mcpTools.length > 0) {
-              console.log(`\nMCP Tools (${mcpTools.length}):\n`);
-              for (const tool of mcpTools) {
-                console.log(`  ${tool.id} [${tool.provider}]`);
-                if (tool.description) console.log(`    ${tool.description}`);
+          // openclaw bitrouter tools — list MCP tools and skills
+          prog
+            .command("bitrouter tools")
+            .description(
+              "List MCP tools and registered skills available through BitRouter",
+            )
+            .action(async () => {
+              if (!state.healthy) {
+                console.log(
+                  "\nBitRouter is not healthy. Start the gateway first.\n",
+                );
+                return;
               }
-            }
+              await refreshTools(state, api);
+              await refreshSkills(state, api);
 
-            if (skillEntries.length > 0) {
-              console.log(`\nSkills (${skillEntries.length}):\n`);
-              for (const skill of skillEntries) {
-                console.log(`  ${skill.id}`);
-                if (skill.description) console.log(`    ${skill.description}`);
+              if (state.knownTools.length === 0) {
+                console.log("\nNo tools or skills registered.\n");
+                console.log(
+                  "Configure MCP servers in openclaw.json under plugins.entries.bitrouter.config.mcpServers",
+                );
+                console.log(
+                  "Configure skills under plugins.entries.bitrouter.config.skills\n",
+                );
+                return;
               }
-            }
 
-            console.log();
-          });
-      },
-      { commands: ["bitrouter"] }
-    );
-  } catch (err) {
-    api.logger.warn(`Failed to register bitrouter CLI commands: ${err}`);
+              const mcpTools = state.knownTools.filter(
+                (t) => t.provider !== "skill",
+              );
+              const skillEntries = state.knownTools.filter(
+                (t) => t.provider === "skill",
+              );
+
+              if (mcpTools.length > 0) {
+                console.log(`\nMCP Tools (${mcpTools.length}):\n`);
+                for (const tool of mcpTools) {
+                  console.log(`  ${tool.id} [${tool.provider}]`);
+                  if (tool.description) console.log(`    ${tool.description}`);
+                }
+              }
+
+              if (skillEntries.length > 0) {
+                console.log(`\nSkills (${skillEntries.length}):\n`);
+                for (const skill of skillEntries) {
+                  console.log(`  ${skill.id}`);
+                  if (skill.description)
+                    console.log(`    ${skill.description}`);
+                }
+              }
+
+              console.log();
+            });
+        },
+        { commands: ["bitrouter"] },
+      );
+    } catch (err) {
+      api.logger.warn(`Failed to register bitrouter CLI commands: ${err}`);
+    }
   }
 
   // ── Check if setup has been completed ────────────────────────────
@@ -349,15 +461,19 @@ export function activate(api: OpenClawPluginApi): void {
         config.solanaRpcUrl = onboarding.rpc_url;
       }
       state.onboardingState = onboarding;
-      api.logger.info("BitRouter activating in cloud mode (onboarding completed)");
+      api.logger.info(
+        "BitRouter activating in cloud mode (onboarding completed)",
+      );
     } else if (onboarding && onboarding.status === "completed_byok") {
       // BYOK onboarding completed via Rust CLI — fall through to auto-detect.
       state.onboardingState = onboarding;
-      api.logger.info("BitRouter BYOK onboarding detected, using auto-detect flow");
+      api.logger.info(
+        "BitRouter BYOK onboarding detected, using auto-detect flow",
+      );
     } else {
       if (onboarding && needsOnboarding(onboarding)) {
         api.logger.info(
-          "BitRouter onboarding not complete. Run: openclaw bitrouter setup"
+          "BitRouter onboarding not complete. Run: openclaw bitrouter setup",
         );
       }
     }
@@ -368,7 +484,7 @@ export function activate(api: OpenClawPluginApi): void {
     if (!config.mode) {
       config.mode = "auto";
       api.logger.info(
-        "BitRouter activating in auto mode — provider detection deferred to discovery phase"
+        "BitRouter activating in auto mode — provider detection deferred to discovery phase",
       );
     }
   }
@@ -377,7 +493,9 @@ export function activate(api: OpenClawPluginApi): void {
 
   // Register the daemon service (spawn/stop bitrouter).
   try {
-    registerBitrouterService(api, config, state, stateDirRef);
+    registerBitrouterService(api, config, state, stateDirRef, () =>
+      mcpBridge.refresh(),
+    );
   } catch (err) {
     api.logger.error(`Failed to register BitRouter service: ${err}`);
     // Continue — the user may run BitRouter externally.
@@ -406,12 +524,12 @@ export function activate(api: OpenClawPluginApi): void {
 
   if (config.mode === "auto") {
     api.logger.info(
-      `BitRouter plugin activated in auto mode (${state.baseUrl}, use 'openclaw bitrouter switch-all' to route all models)`
+      `BitRouter plugin activated in auto mode (${state.baseUrl}, use 'openclaw bitrouter switch-all' to route all models)`,
     );
   } else {
     const upstream = config.byok?.upstreamProvider ?? "unknown";
     api.logger.info(
-      `BitRouter plugin activated (${state.baseUrl}, mode=${config.mode}, upstream=${upstream})`
+      `BitRouter plugin activated (${state.baseUrl}, mode=${config.mode}, upstream=${upstream})`,
     );
   }
 
@@ -423,7 +541,10 @@ export function activate(api: OpenClawPluginApi): void {
   // overhead for two localhost calls).
   try {
     const healthResult = spawnSync("curl", [
-      "-s", "--max-time", "1", `${state.baseUrl}/health`,
+      "-s",
+      "--max-time",
+      "1",
+      `${state.baseUrl}/health`,
     ]);
     if (healthResult.status === 0) {
       const health = JSON.parse(healthResult.stdout.toString());
@@ -431,13 +552,16 @@ export function activate(api: OpenClawPluginApi): void {
         state.healthy = true;
 
         const routesResult = spawnSync("curl", [
-          "-s", "--max-time", "2", `${state.baseUrl}/v1/routes`,
+          "-s",
+          "--max-time",
+          "2",
+          `${state.baseUrl}/v1/routes`,
         ]);
         if (routesResult.status === 0) {
           const body = JSON.parse(routesResult.stdout.toString());
           state.knownRoutes = body.routes ?? [];
           api.logger.info(
-            `Loaded ${state.knownRoutes.length} route(s) from BitRouter (sync probe)`
+            `Loaded ${state.knownRoutes.length} route(s) from BitRouter (sync probe)`,
           );
         }
       }

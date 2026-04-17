@@ -22,7 +22,6 @@ function createMockState(overrides?: Partial<BitrouterState>): BitrouterState {
     homeDir: "/tmp/bitrouter-test",
     metrics: null,
     apiToken: null,
-    adminToken: null,
     onboardingState: null,
     ...overrides,
   };
@@ -51,12 +50,12 @@ function createMockApi() {
 function getHookHandler(api: OpenClawPluginApi) {
   const onMock = api.on as ReturnType<typeof vi.fn>;
   const call = onMock.mock.calls.find(
-    (c: unknown[]) => c[0] === "before_prompt_build"
+    (c: unknown[]) => c[0] === "before_prompt_build",
   );
   expect(call).toBeTruthy();
   return call![1] as (
     event: { prompt: string },
-    ctx: { agentId?: string }
+    ctx: { agentId?: string },
   ) => { prependContext?: string; appendSystemContext?: string } | void;
 }
 
@@ -73,11 +72,11 @@ describe("registerPromptContext", () => {
     const onMock = api.on as ReturnType<typeof vi.fn>;
     expect(onMock).toHaveBeenCalledWith(
       "before_prompt_build",
-      expect.any(Function)
+      expect.any(Function),
     );
   });
 
-  it("returns static appendSystemContext with CLI reference", () => {
+  it("returns static appendSystemContext with tool reference", () => {
     const api = createMockApi();
     const config: BitrouterPluginConfig = { mode: "byok" };
     const state = createMockState();
@@ -87,8 +86,8 @@ describe("registerPromptContext", () => {
     const result = handler({ prompt: "hello" }, {});
 
     expect(result).toBeTruthy();
-    expect(result!.appendSystemContext).toContain("openclaw bitrouter status");
-    expect(result!.appendSystemContext).toContain("/bitrouter skill");
+    expect(result!.appendSystemContext).toContain("bitrouter");
+    expect(result!.appendSystemContext).toContain("Available tool commands");
   });
 
   it("omits healthy tag when BitRouter is down", () => {
@@ -113,7 +112,11 @@ describe("registerPromptContext", () => {
       healthy: true,
       knownRoutes: [
         { model: "gpt-4o", provider: "openai", protocol: "openai" },
-        { model: "claude-3-5-sonnet", provider: "anthropic", protocol: "anthropic" },
+        {
+          model: "claude-3-5-sonnet",
+          provider: "anthropic",
+          protocol: "anthropic",
+        },
       ],
     });
 
