@@ -1,23 +1,18 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
  * Tests for the unified `bitrouter` agent tool.
  *
- * Tests focus on:
- * - Command allowlist validation
- * - Tokenization of command strings
- * - Rejection of blocked commands
- * - Successful dispatch (mocked binary execution)
+ * The `install` subcommand is owned by the separate `bitrouter_install`
+ * tool (see bitrouter-install-tool.test.ts).
  */
 
-// Mock child_process before importing.
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
 
-// Mock binary resolution.
 vi.mock("../src/binary.js", () => ({
-  resolveBinaryPath: vi.fn(() => Promise.resolve("/usr/local/bin/bitrouter")),
+  findSystemBinary: vi.fn(() => "/usr/local/bin/bitrouter"),
 }));
 
 import { execFile } from "node:child_process";
@@ -25,9 +20,8 @@ import {
   createBitrouterTool,
   ALLOWED_COMMANDS_DESCRIPTION,
 } from "../src/bitrouter-tool.js";
+import { findSystemBinary } from "../src/binary.js";
 import type { BitrouterState } from "../src/types.js";
-
-// ── Helpers ──────────────────────────────────────────────────────────
 
 function createMockState(overrides?: Partial<BitrouterState>): BitrouterState {
   return {
@@ -72,6 +66,9 @@ describe("bitrouter tool", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    (findSystemBinary as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      "/usr/local/bin/bitrouter",
+    );
   });
 
   it("creates a tool with correct name and description", () => {
@@ -81,7 +78,8 @@ describe("bitrouter tool", () => {
     expect(tool.label).toBe("BitRouter CLI");
   });
 
-  it("exports ALLOWED_COMMANDS_DESCRIPTION", () => {
+  it("does not include install in the mono tool allowlist", () => {
+    expect(ALLOWED_COMMANDS_DESCRIPTION).not.toContain("bitrouter install");
     expect(ALLOWED_COMMANDS_DESCRIPTION).toContain("bitrouter status");
     expect(ALLOWED_COMMANDS_DESCRIPTION).toContain("bitrouter models list");
     expect(ALLOWED_COMMANDS_DESCRIPTION).toContain("bitrouter route add");
@@ -101,9 +99,9 @@ describe("bitrouter tool", () => {
     });
     expect(result.details.exitCode).toBe(0);
 
-    // Verify binary was called with --home-dir and the command.
     const call = (execFile as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0];
+    expect(call[0]).toBe("/usr/local/bin/bitrouter");
     expect(call[1]).toEqual(["--home-dir", "/tmp/bitrouter-test", "status"]);
   });
 
@@ -176,8 +174,34 @@ describe("bitrouter tool", () => {
 
     const call = (execFile as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0];
-    // Should NOT pass "bitrouter" as an arg — only "status".
     expect(call[1]).toEqual(["--home-dir", "/tmp/bitrouter-test", "status"]);
+  });
+
+  // ── install is not handled here ──────────────────────────────────
+
+  it("rejects 'install' (handled by the separate install tool)", async () => {
+    const tool = createBitrouterTool(state, stateDirRef);
+    const result = await tool.execute("call-no-install", {
+      command: "install",
+    });
+
+    expect(result.content[0].text).toContain("not allowed");
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  // ── Missing system binary ────────────────────────────────────────
+
+  it("returns an instructive error when system binary is missing", async () => {
+    (findSystemBinary as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      null,
+    );
+    const tool = createBitrouterTool(state, stateDirRef);
+    const result = await tool.execute("call-missing-1", { command: "status" });
+
+    expect(execFile).not.toHaveBeenCalled();
+    expect(result.details.exitCode).toBe(127);
+    expect(result.content[0].text).toContain("not found on $PATH");
+    expect(result.content[0].text).toContain("bitrouter_install");
   });
 
   // ── Blocked commands ─────────────────────────────────────────────

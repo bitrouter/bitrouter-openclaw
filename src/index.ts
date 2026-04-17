@@ -59,6 +59,7 @@ import {
 import { resolveBinaryPath, findSystemBinary } from "./binary.js";
 import { switchAll, restoreModels } from "./switch.js";
 import { createBitrouterTool } from "./bitrouter-tool.js";
+import { createBitrouterInstallTool } from "./bitrouter-install-tool.js";
 import { createMcpToolsBridge } from "./mcp-tools.js";
 
 /**
@@ -116,6 +117,16 @@ export function activate(api: OpenClawPluginApi): void {
     });
   } catch (err) {
     api.logger.error(`Failed to register BitRouter tool: ${err}`);
+  }
+
+  // Dedicated installer tool — split out so the model gets a strong nudge
+  // to call it first when the system binary is missing.
+  try {
+    api.registerTool(createBitrouterInstallTool(), {
+      name: "bitrouter_install",
+    });
+  } catch (err) {
+    api.logger.error(`Failed to register BitRouter install tool: ${err}`);
   }
 
   // ── Register MCP tools bridge ───────────────────────────────────────

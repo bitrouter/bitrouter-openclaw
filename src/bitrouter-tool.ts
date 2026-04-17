@@ -5,12 +5,16 @@
  * The tool validates that every command is in the allowlist before
  * dispatching to the BitRouter binary. Destructive operations (wallet
  * mutations, key creation, auth login, daemon lifecycle) are blocked.
+ *
+ * If the system `bitrouter` binary is missing from $PATH, every command
+ * returns an instructive error pointing the agent to the dedicated
+ * `bitrouter_install` tool.
  */
 
 import { execFile } from "node:child_process";
 import type { AnyAgentTool } from "openclaw/plugin-sdk/plugin-entry";
 import type { BitrouterState } from "./types.js";
-import { resolveBinaryPath } from "./binary.js";
+import { findSystemBinary } from "./binary.js";
 
 // ── Allowlist ────────────────────────────────────────────────────────
 
@@ -86,12 +90,8 @@ function extractSubcommand(tokens: string[]): string[] {
 
 /**
  * Check whether a tokenised command matches any entry in the allowlist.
- *
- * The command's leading positional tokens must start with an allowed prefix.
- * Extra positional args after the prefix are fine (e.g. "route add model endpoint").
  */
 function isAllowed(tokens: string[]): boolean {
-  // Strip a leading "bitrouter" token if the user included it.
   const effective =
     tokens.length > 0 && tokens[0] === "bitrouter" ? tokens.slice(1) : tokens;
 
@@ -116,19 +116,6 @@ function toCliArgs(tokens: string[]): string[] {
 
 // ── CLI execution ────────────────────────────────────────────────────
 
-/** Cached binary path — resolved once per process. */
-let cachedBinaryPath: string | null = null;
-let cachedStateDir: string | null = null;
-
-async function getBinaryPath(stateDir: string): Promise<string> {
-  if (cachedBinaryPath && cachedStateDir === stateDir) {
-    return cachedBinaryPath;
-  }
-  cachedBinaryPath = await resolveBinaryPath(stateDir);
-  cachedStateDir = stateDir;
-  return cachedBinaryPath;
-}
-
 interface CliResult {
   stdout: string;
   stderr: string;
@@ -136,12 +123,11 @@ interface CliResult {
 }
 
 async function runCli(
-  stateDir: string,
+  binaryPath: string,
   homeDir: string,
   args: string[],
   timeoutMs = 30_000,
 ): Promise<CliResult> {
-  const binaryPath = await getBinaryPath(stateDir);
   return new Promise((resolve) => {
     execFile(
       binaryPath,
@@ -188,13 +174,10 @@ const BitrouterToolParameters = {
 
 /**
  * Create the unified `bitrouter` agent tool.
- *
- * The tool dispatches safe CLI commands to the BitRouter binary and
- * returns the output. Destructive commands are rejected before execution.
  */
 export function createBitrouterTool(
   state: BitrouterState,
-  stateDirRef: { value: string },
+  _stateDirRef: { value: string },
 ): AnyAgentTool {
   return {
     name: "bitrouter",
@@ -203,6 +186,8 @@ export function createBitrouterTool(
     description:
       "Execute BitRouter CLI commands. Use this tool to inspect and manage the BitRouter " +
       "LLM proxy — list models, manage routes, check agent status, view policies, etc.\n\n" +
+      "If the system `bitrouter` binary is missing, this tool returns an error; " +
+      "call the `bitrouter_install` tool first to install it.\n\n" +
       "Available commands:\n  " +
       ALLOWED_COMMANDS_DESCRIPTION +
       "\n\nExamples:\n" +
@@ -260,8 +245,23 @@ export function createBitrouterTool(
         };
       }
 
+      const binaryPath = findSystemBinary();
+      if (!binaryPath) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Error: `bitrouter` binary not found on $PATH. " +
+                "Call the `bitrouter_install` tool first to install the system binary.",
+            },
+          ],
+          details: { exitCode: 127 },
+        };
+      }
+
       const args = toCliArgs(tokens);
-      const result = await runCli(stateDirRef.value, state.homeDir, args);
+      const result = await runCli(binaryPath, state.homeDir, args);
 
       const parts: string[] = [];
       if (result.stdout.trim()) {
